@@ -10,12 +10,16 @@
 AppId={{B7ADF221-E903-4075-8A67-2DE905EF5A31}
 AppName=Kuroya
 AppVersion={#AppVersion}
-AppVerName=Kuroya
+AppVerName=Kuroya {#AppVersion}
 AppPublisher=Kuroya Contributors
 AppPublisherURL=https://github.com/redmarklabscom/kuroya
 AppSupportURL=https://github.com/redmarklabscom/kuroya/issues
 AppUpdatesURL=https://github.com/redmarklabscom/kuroya/releases
 AppCopyright=Copyright 2026 Kuroya Contributors
+VersionInfoVersion={#AppVersion}
+VersionInfoCompany=Kuroya Contributors
+VersionInfoDescription=Kuroya Setup
+VersionInfoProductName=Kuroya
 DefaultDirName={localappdata}\Programs\Kuroya
 DisableProgramGroupPage=yes
 LicenseFile={#SourceRoot}\installer\LICENSE.txt

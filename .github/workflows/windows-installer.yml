@@ -1,0 +1,93 @@
+name: Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - ".github/workflows/windows-installer.yml"
+      - "assets/logos/**"
+      - "crates/**"
+      - "installer/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  installer:
+    name: Build Windows setup
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check release tag version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -LiteralPath crates/kuroya-app/Cargo.toml
+          $versionLine = $manifest | Where-Object { $_ -match '^version\s*=\s*"([^"]+)"' } | Select-Object -First 1
+          if (-not $versionLine) {
+            throw 'Could not read kuroya-app version from Cargo.toml'
+          }
+
+          $version = [regex]::Match($versionLine, '^version\s*=\s*"([^"]+)"').Groups[1].Value
+          $expectedTag = "v$version"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Release tag $env:GITHUB_REF_NAME does not match Cargo version $expectedTag"
+          }
+
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: ./installer/build-installer.ps1
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kuroya-windows-installer
+          path: dist/Kuroya-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Attach installer to GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $asset = Get-ChildItem -LiteralPath dist -Filter 'Kuroya-Setup-*.exe' | Select-Object -First 1
+          if (-not $asset) {
+            throw 'No installer asset found in dist.'
+          }
+
+          $tag = $env:GITHUB_REF_NAME
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $tag --generate-notes
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not create release $tag"
+            }
+          }
+
+          gh release upload $tag $asset.FullName --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not upload $($asset.Name) to release $tag"
+          }

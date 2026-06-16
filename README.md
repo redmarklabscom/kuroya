@@ -84,6 +84,21 @@ cargo build -p kuroya-app --release
 
 the binary is `kuroya` on unix-like systems and `kuroya.exe` on windows.
 
+## build the windows installer
+
+install Inno Setup 6, then run:
+
+```powershell
+.\installer\build-installer.ps1
+```
+
+the setup exe is written to `dist\Kuroya-Setup-<version>.exe`. if `ISCC.exe`
+is not on `PATH`, pass `-InnoCompilerPath` or set `INNO_SETUP_COMPILER`.
+
+tagged GitHub builds publish the same setup exe as a release asset, which is
+what the in-app update checker expects. release tags must match the app version,
+for example `v0.1.0`.
+
 ## test it
 
 ```powershell

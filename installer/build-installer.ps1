@@ -1,12 +1,52 @@
 [CmdletBinding()]
-param([switch]$SkipBuild)
+param(
+    [switch]$SkipBuild,
+    [string]$InnoCompilerPath
+)
 
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $ReleaseExe = Join-Path $RepoRoot 'target\release\kuroya.exe'
 $InnoScript = Join-Path $PSScriptRoot 'kuroya.iss'
-$InnoCompiler = Join-Path $RepoRoot '.tools\InnoSetup6\ISCC.exe'
+
+function Resolve-InnoCompiler {
+    param([string]$ExplicitPath)
+
+    $candidatePaths = @()
+    if ($ExplicitPath) {
+        $candidatePaths += $ExplicitPath
+    }
+    if ($env:INNO_SETUP_COMPILER) {
+        $candidatePaths += $env:INNO_SETUP_COMPILER
+    }
+    $candidatePaths += Join-Path $RepoRoot '.tools\InnoSetup6\ISCC.exe'
+    if (${env:ProgramFiles(x86)}) {
+        $candidatePaths += Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+    }
+    if ($env:ProgramFiles) {
+        $candidatePaths += Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'
+    }
+    if ($env:LOCALAPPDATA) {
+        $candidatePaths += Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'
+    }
+
+    foreach ($candidate in $candidatePaths) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    throw @'
+Inno Setup compiler not found.
+Install Inno Setup 6, add ISCC.exe to PATH, set INNO_SETUP_COMPILER, or pass -InnoCompilerPath.
+'@
+}
 
 Push-Location $RepoRoot
 try {
@@ -21,14 +61,7 @@ try {
         throw "Release binary not found: $ReleaseExe"
     }
 
-    if (-not (Test-Path -LiteralPath $InnoCompiler)) {
-        $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-        if ($command) {
-            $InnoCompiler = $command.Source
-        } else {
-            throw "Inno Setup compiler not found. Expected $InnoCompiler"
-        }
-    }
+    $InnoCompiler = Resolve-InnoCompiler -ExplicitPath $InnoCompilerPath
 
     $manifest = Get-Content -LiteralPath (Join-Path $RepoRoot 'crates\kuroya-app\Cargo.toml')
     $versionLine = $manifest | Where-Object { $_ -match '^version\s*=\s*"([^"]+)"' } | Select-Object -First 1
