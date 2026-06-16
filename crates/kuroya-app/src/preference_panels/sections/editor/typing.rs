@@ -1,0 +1,443 @@
+use crate::preference_panels::sections::{
+    SETTINGS_TARGET_EDITOR_TYPING, SettingsHighlightState, bounded_singleline_text_edit,
+    settings_target_heading,
+};
+use eframe::egui;
+use kuroya_core::{
+    EditorAutoClosingEditStrategy, EditorAutoClosingStrategy, EditorDropIntoEditorShowDropSelector,
+    EditorMouseMiddleClickAction, EditorMultiCursorModifier, EditorMultiCursorPaste,
+    EditorPasteAsShowPasteSelector, EditorSettings, MAX_EDITOR_MULTI_CURSOR_LIMIT,
+    MIN_EDITOR_MULTI_CURSOR_LIMIT, clamp_editor_multi_cursor_limit,
+};
+
+pub(super) fn render_typing_settings_with_highlight(
+    ui: &mut egui::Ui,
+    draft: &mut EditorSettings,
+    highlight: &mut SettingsHighlightState<'_>,
+) {
+    ui.add_space(12.0);
+    settings_target_heading(
+        ui,
+        highlight,
+        SETTINGS_TARGET_EDITOR_TYPING,
+        "Typing Assistance",
+    );
+    egui::Grid::new("settings_editor_typing_grid")
+        .num_columns(2)
+        .spacing([18.0, 10.0])
+        .show(ui, |ui| {
+            ui.label("Auto indent");
+            ui.checkbox(&mut draft.auto_indent, "Indent new lines from context");
+            ui.end_row();
+
+            ui.label("Auto close brackets");
+            ui.checkbox(&mut draft.auto_closing_brackets, "Insert matching brackets");
+            ui.end_row();
+
+            ui.label("Auto close quotes");
+            ui.checkbox(&mut draft.auto_closing_quotes, "Insert matching quotes");
+            ui.end_row();
+
+            ui.label("Auto close comments");
+            editor_auto_closing_strategy_combo(
+                ui,
+                "editor_auto_closing_comments",
+                &mut draft.auto_closing_comments,
+            );
+            ui.end_row();
+
+            ui.label("Auto close delete");
+            editor_auto_closing_edit_strategy_combo(
+                ui,
+                "editor_auto_closing_delete",
+                &mut draft.auto_closing_delete,
+            );
+            ui.end_row();
+
+            ui.label("Auto close overtype");
+            editor_auto_closing_edit_strategy_combo(
+                ui,
+                "editor_auto_closing_overtype",
+                &mut draft.auto_closing_overtype,
+            );
+            ui.end_row();
+
+            ui.label("Auto surround");
+            ui.checkbox(&mut draft.auto_surround, "Wrap selections with pairs");
+            ui.end_row();
+
+            ui.label("Indent pasted text");
+            ui.checkbox(
+                &mut draft.auto_indent_on_paste,
+                "Adjust indentation when pasting text",
+            );
+            ui.end_row();
+
+            ui.label("Indent paste in strings");
+            ui.checkbox(
+                &mut draft.auto_indent_on_paste_within_string,
+                "Adjust indentation for pasted text inside strings",
+            );
+            ui.end_row();
+
+            ui.label("Format on paste");
+            ui.checkbox(&mut draft.format_on_paste, "Format after pasting text");
+            ui.end_row();
+
+            ui.label("Paste as");
+            ui.checkbox(&mut draft.paste_as_enabled, "Enable paste transformations");
+            ui.end_row();
+
+            ui.label("Paste selector");
+            editor_paste_as_show_paste_selector_combo(
+                ui,
+                "editor_paste_as_show_paste_selector",
+                &mut draft.paste_as_show_paste_selector,
+            );
+            ui.end_row();
+
+            ui.label("Format on type");
+            ui.checkbox(&mut draft.format_on_type, "Format the line after typing");
+            ui.end_row();
+
+            ui.label("Sticky tab stops");
+            ui.checkbox(
+                &mut draft.sticky_tab_stops,
+                "Make selection snap to tab stops when using spaces",
+            );
+            ui.end_row();
+
+            ui.label("Linked editing");
+            ui.checkbox(&mut draft.linked_editing, "Edit linked symbols together");
+            ui.end_row();
+
+            ui.label("Rename on type");
+            ui.checkbox(
+                &mut draft.rename_on_type,
+                "Rename linked symbols while typing",
+            );
+            ui.end_row();
+
+            ui.label("Tab focus mode");
+            ui.checkbox(&mut draft.tab_focus_mode, "Move focus with Tab");
+            ui.end_row();
+
+            ui.label("Read-only");
+            ui.vertical(|ui| {
+                ui.checkbox(&mut draft.read_only, "Open editors as read-only");
+                ui.checkbox(&mut draft.dom_read_only, "Use DOM read-only input");
+            });
+            ui.end_row();
+
+            ui.label("Read-only message");
+            bounded_singleline_text_edit(ui, &mut draft.read_only_message, 260.0);
+            ui.end_row();
+
+            ui.label("Comment spacing");
+            ui.checkbox(
+                &mut draft.comments_insert_space,
+                "Insert a space after line comment tokens",
+            );
+            ui.end_row();
+
+            ui.label("Ignore empty comments");
+            ui.checkbox(
+                &mut draft.comments_ignore_empty_lines,
+                "Skip empty lines when toggling comments",
+            );
+            ui.end_row();
+
+            ui.label("Select blocks");
+            ui.checkbox(
+                &mut draft.double_click_selects_block,
+                "Double-clicking beside brackets selects block content",
+            );
+            ui.end_row();
+
+            ui.label("Drag and drop");
+            ui.checkbox(
+                &mut draft.drag_and_drop,
+                "Allow moving selections with drag and drop",
+            );
+            ui.end_row();
+
+            ui.label("Drop into editor");
+            ui.checkbox(
+                &mut draft.drop_into_editor_enabled,
+                "Enable external drop handling",
+            );
+            ui.end_row();
+
+            ui.label("Drop selector");
+            editor_drop_into_editor_show_drop_selector_combo(
+                ui,
+                "editor_drop_into_editor_show_drop_selector",
+                &mut draft.drop_into_editor_show_drop_selector,
+            );
+            ui.end_row();
+
+            ui.label("Multi cursor modifier");
+            editor_multi_cursor_modifier_combo(
+                ui,
+                "editor_multi_cursor_modifier",
+                &mut draft.multi_cursor_modifier,
+            );
+            ui.end_row();
+
+            ui.label("Multi cursor behavior");
+            ui.vertical(|ui| {
+                ui.checkbox(
+                    &mut draft.multi_cursor_merge_overlapping,
+                    "Merge overlapping cursors",
+                );
+                ui.checkbox(&mut draft.column_selection, "Enable column selection");
+            });
+            ui.end_row();
+
+            ui.label("Multi cursor paste");
+            editor_multi_cursor_paste_combo(
+                ui,
+                "editor_multi_cursor_paste",
+                &mut draft.multi_cursor_paste,
+            );
+            ui.end_row();
+
+            ui.label("Multi cursor limit");
+            editor_multi_cursor_limit_drag_value(ui, &mut draft.multi_cursor_limit);
+            ui.end_row();
+
+            ui.label("Middle click");
+            editor_mouse_middle_click_action_combo(
+                ui,
+                "editor_mouse_middle_click_action",
+                &mut draft.mouse_middle_click_action,
+            );
+            ui.end_row();
+
+            ui.label("Empty selection clipboard");
+            ui.checkbox(
+                &mut draft.empty_selection_clipboard,
+                "Copy or cut the current line when nothing is selected",
+            );
+            ui.end_row();
+
+            ui.label("Selection clipboard");
+            ui.checkbox(
+                &mut draft.selection_clipboard,
+                "Support the primary selection clipboard",
+            );
+            ui.end_row();
+
+            ui.label("Copy highlighting");
+            ui.checkbox(
+                &mut draft.copy_with_syntax_highlighting,
+                "Copy text with syntax highlighting",
+            );
+            ui.end_row();
+        });
+}
+
+fn editor_multi_cursor_limit_drag_value(ui: &mut egui::Ui, value: &mut usize) {
+    let mut clamped_value = clamp_editor_multi_cursor_limit(*value);
+    let response = ui.add(
+        egui::DragValue::new(&mut clamped_value)
+            .speed(100.0)
+            .range(MIN_EDITOR_MULTI_CURSOR_LIMIT..=MAX_EDITOR_MULTI_CURSOR_LIMIT),
+    );
+
+    if response.changed() {
+        *value = clamped_value;
+    }
+}
+
+fn editor_auto_closing_strategy_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    value: &mut EditorAutoClosingStrategy,
+) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(editor_auto_closing_strategy_label(*value))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(value, EditorAutoClosingStrategy::Always, "Always");
+            ui.selectable_value(
+                value,
+                EditorAutoClosingStrategy::LanguageDefined,
+                "Language defined",
+            );
+            ui.selectable_value(
+                value,
+                EditorAutoClosingStrategy::BeforeWhitespace,
+                "Before whitespace",
+            );
+            ui.selectable_value(value, EditorAutoClosingStrategy::Never, "Never");
+        });
+}
+
+fn editor_auto_closing_strategy_label(mode: EditorAutoClosingStrategy) -> &'static str {
+    match mode {
+        EditorAutoClosingStrategy::Always => "Always",
+        EditorAutoClosingStrategy::LanguageDefined => "Language defined",
+        EditorAutoClosingStrategy::BeforeWhitespace => "Before whitespace",
+        EditorAutoClosingStrategy::Never => "Never",
+    }
+}
+
+fn editor_auto_closing_edit_strategy_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    value: &mut EditorAutoClosingEditStrategy,
+) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(editor_auto_closing_edit_strategy_label(*value))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(value, EditorAutoClosingEditStrategy::Always, "Always");
+            ui.selectable_value(value, EditorAutoClosingEditStrategy::Auto, "Auto");
+            ui.selectable_value(value, EditorAutoClosingEditStrategy::Never, "Never");
+        });
+}
+
+fn editor_auto_closing_edit_strategy_label(mode: EditorAutoClosingEditStrategy) -> &'static str {
+    match mode {
+        EditorAutoClosingEditStrategy::Always => "Always",
+        EditorAutoClosingEditStrategy::Auto => "Auto",
+        EditorAutoClosingEditStrategy::Never => "Never",
+    }
+}
+
+fn editor_paste_as_show_paste_selector_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    value: &mut EditorPasteAsShowPasteSelector,
+) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(editor_paste_as_show_paste_selector_label(*value))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(
+                value,
+                EditorPasteAsShowPasteSelector::AfterPaste,
+                "After paste",
+            );
+            ui.selectable_value(value, EditorPasteAsShowPasteSelector::Never, "Never");
+        });
+}
+
+fn editor_paste_as_show_paste_selector_label(mode: EditorPasteAsShowPasteSelector) -> &'static str {
+    match mode {
+        EditorPasteAsShowPasteSelector::AfterPaste => "After paste",
+        EditorPasteAsShowPasteSelector::Never => "Never",
+    }
+}
+
+fn editor_drop_into_editor_show_drop_selector_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    value: &mut EditorDropIntoEditorShowDropSelector,
+) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(editor_drop_into_editor_show_drop_selector_label(*value))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(
+                value,
+                EditorDropIntoEditorShowDropSelector::AfterDrop,
+                "After drop",
+            );
+            ui.selectable_value(value, EditorDropIntoEditorShowDropSelector::Never, "Never");
+        });
+}
+
+fn editor_drop_into_editor_show_drop_selector_label(
+    mode: EditorDropIntoEditorShowDropSelector,
+) -> &'static str {
+    match mode {
+        EditorDropIntoEditorShowDropSelector::AfterDrop => "After drop",
+        EditorDropIntoEditorShowDropSelector::Never => "Never",
+    }
+}
+
+fn editor_multi_cursor_modifier_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    value: &mut EditorMultiCursorModifier,
+) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(editor_multi_cursor_modifier_label(*value))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(value, EditorMultiCursorModifier::Alt, "Alt");
+            ui.selectable_value(value, EditorMultiCursorModifier::CtrlCmd, "Ctrl/Cmd");
+        });
+}
+
+fn editor_multi_cursor_modifier_label(mode: EditorMultiCursorModifier) -> &'static str {
+    match mode {
+        EditorMultiCursorModifier::Alt => "Alt",
+        EditorMultiCursorModifier::CtrlCmd => "Ctrl/Cmd",
+    }
+}
+
+fn editor_multi_cursor_paste_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    value: &mut EditorMultiCursorPaste,
+) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(editor_multi_cursor_paste_label(*value))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(value, EditorMultiCursorPaste::Spread, "Spread");
+            ui.selectable_value(value, EditorMultiCursorPaste::Full, "Full");
+        });
+}
+
+fn editor_multi_cursor_paste_label(mode: EditorMultiCursorPaste) -> &'static str {
+    match mode {
+        EditorMultiCursorPaste::Spread => "Spread",
+        EditorMultiCursorPaste::Full => "Full",
+    }
+}
+
+fn editor_mouse_middle_click_action_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    value: &mut EditorMouseMiddleClickAction,
+) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(editor_mouse_middle_click_action_label(*value))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(value, EditorMouseMiddleClickAction::Default, "Default");
+            ui.selectable_value(value, EditorMouseMiddleClickAction::OpenLink, "Open link");
+            ui.selectable_value(
+                value,
+                EditorMouseMiddleClickAction::CtrlLeftClick,
+                "Ctrl left click",
+            );
+        });
+}
+
+fn editor_mouse_middle_click_action_label(mode: EditorMouseMiddleClickAction) -> &'static str {
+    match mode {
+        EditorMouseMiddleClickAction::Default => "Default",
+        EditorMouseMiddleClickAction::OpenLink => "Open link",
+        EditorMouseMiddleClickAction::CtrlLeftClick => "Ctrl left click",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::editor_multi_cursor_limit_drag_value;
+    use eframe::egui;
+    use kuroya_core::MAX_EDITOR_MULTI_CURSOR_LIMIT;
+
+    #[test]
+    fn multi_cursor_limit_render_preserves_raw_out_of_range_draft() {
+        let ctx = egui::Context::default();
+        let mut value = usize::MAX;
+
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                editor_multi_cursor_limit_drag_value(ui, &mut value);
+            });
+        });
+
+        assert_eq!(value, usize::MAX);
+        assert_ne!(value, MAX_EDITOR_MULTI_CURSOR_LIMIT);
+    }
+}

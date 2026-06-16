@@ -1,0 +1,160 @@
+use crate::large_file_mode::{
+    buffer_uses_large_file_mode, buffer_uses_large_file_performance_mode,
+};
+use kuroya_core::{BufferId, TextBuffer, server_for_language};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Read,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+pub(crate) const LSP_DISK_EDIT_MAX_BYTES: u64 = 3 * 1024 * 1024;
+pub(crate) const LANGUAGE_SYNC_DEBOUNCE: Duration = Duration::from_millis(180);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackgroundLanguageBlockReason {
+    BinaryPreview,
+    LossyDecoded,
+    LargeFileMode,
+    LargeBuffer,
+}
+
+impl BackgroundLanguageBlockReason {
+    pub(crate) fn folding_status(self) -> &'static str {
+        match self {
+            Self::BinaryPreview => "Folding is disabled for binary previews",
+            Self::LossyDecoded => {
+                "Folding is disabled for files decoded with replacement characters"
+            }
+            Self::LargeFileMode => "Folding is disabled for very large buffers",
+            Self::LargeBuffer => "Language folding is paused for this large buffer",
+        }
+    }
+
+    pub(crate) fn formatting_status(self) -> &'static str {
+        match self {
+            Self::BinaryPreview => "Formatting is disabled for binary previews",
+            Self::LossyDecoded => {
+                "Formatting is disabled for files decoded with replacement characters"
+            }
+            Self::LargeFileMode => "Formatting is disabled in large file mode",
+            Self::LargeBuffer => "Formatting is paused for this large buffer",
+        }
+    }
+}
+
+pub(crate) fn due_language_sync_ids(
+    pending: &HashMap<BufferId, Instant>,
+    now: Instant,
+    debounce: Duration,
+) -> Vec<BufferId> {
+    let mut ids = pending
+        .iter()
+        .filter_map(|(id, scheduled)| {
+            (now.saturating_duration_since(*scheduled) >= debounce).then_some(*id)
+        })
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids
+}
+
+pub(crate) fn lsp_lifecycle_target_for_buffer(
+    buffer: &TextBuffer,
+    lossy_buffers: &HashSet<BufferId>,
+    binary_buffers: &HashSet<BufferId>,
+) -> Option<(String, PathBuf)> {
+    let id = buffer.id();
+    if background_language_block_reason(id, buffer, lossy_buffers, binary_buffers).is_some() {
+        return None;
+    }
+    let path = buffer.path()?.clone();
+    let key = server_for_language(buffer.language())?.language;
+    Some((key, path))
+}
+
+pub(crate) fn lsp_lifecycle_targets_for_buffers(
+    buffers: &[TextBuffer],
+    lossy_buffers: &HashSet<BufferId>,
+    binary_buffers: &HashSet<BufferId>,
+) -> Vec<(String, PathBuf)> {
+    buffers
+        .iter()
+        .filter_map(|buffer| lsp_lifecycle_target_for_buffer(buffer, lossy_buffers, binary_buffers))
+        .collect()
+}
+
+pub(crate) fn open_lsp_workspace_edit_block_reason(
+    id: BufferId,
+    changed_on_disk: &HashSet<BufferId>,
+    lossy_buffers: &HashSet<BufferId>,
+    binary_buffers: &HashSet<BufferId>,
+    buffers: &[TextBuffer],
+) -> Option<&'static str> {
+    let buffer = buffers.iter().find(|buffer| buffer.id() == id);
+    if binary_buffers.contains(&id) {
+        Some("binary preview")
+    } else if lossy_buffers.contains(&id) {
+        Some("UTF-8 replacement preview")
+    } else if buffer.is_some_and(buffer_uses_large_file_mode) {
+        Some("large file mode")
+    } else if buffer.is_some_and(buffer_uses_large_file_performance_mode) {
+        Some("large buffer")
+    } else if changed_on_disk.contains(&id)
+        && buffer.is_some_and(|buffer| buffer.is_dirty() && buffer.path().is_some())
+    {
+        Some("changed on disk")
+    } else {
+        None
+    }
+}
+
+pub(crate) fn read_lsp_disk_edit_text(path: &Path, max_bytes: u64) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if metadata.len() > max_bytes {
+        return Err(format!(
+            "file too large for LSP disk edit ({} bytes)",
+            metadata.len()
+        ));
+    }
+    let capacity =
+        usize::try_from(metadata.len().min(max_bytes.saturating_add(1))).unwrap_or(usize::MAX);
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    let byte_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if byte_len > max_bytes {
+        return Err(format!(
+            "file too large for LSP disk edit ({byte_len} bytes)"
+        ));
+    }
+    if bytes.contains(&0) {
+        return Err("binary file skipped".to_owned());
+    }
+    String::from_utf8(bytes).map_err(|_| "invalid UTF-8 file skipped".to_owned())
+}
+
+pub(crate) fn buffer_allows_background_language(buffer: &TextBuffer) -> bool {
+    !buffer_uses_large_file_performance_mode(buffer)
+}
+
+pub(crate) fn background_language_block_reason(
+    id: BufferId,
+    buffer: &TextBuffer,
+    lossy_buffers: &HashSet<BufferId>,
+    binary_buffers: &HashSet<BufferId>,
+) -> Option<BackgroundLanguageBlockReason> {
+    if binary_buffers.contains(&id) {
+        Some(BackgroundLanguageBlockReason::BinaryPreview)
+    } else if lossy_buffers.contains(&id) {
+        Some(BackgroundLanguageBlockReason::LossyDecoded)
+    } else if buffer_uses_large_file_mode(buffer) {
+        Some(BackgroundLanguageBlockReason::LargeFileMode)
+    } else if !buffer_allows_background_language(buffer) {
+        Some(BackgroundLanguageBlockReason::LargeBuffer)
+    } else {
+        None
+    }
+}

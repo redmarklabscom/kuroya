@@ -1,0 +1,527 @@
+use crate::{
+    KuroyaApp,
+    path_display::display_error_label_cow,
+    source_control_panel::{
+        source_control_sort_mode_from_setting, source_control_view_mode_from_setting,
+    },
+    workspace_state::settings_path,
+};
+use std::{fmt::Display, path::Path};
+
+mod draft;
+mod terminal;
+mod validation;
+
+use terminal::sync_terminal_settings;
+use validation::{SettingsPanelDraftValidation, validate_settings_panel_draft};
+
+impl KuroyaApp {
+    pub(super) fn settings_panel_draft_validation(&self) -> SettingsPanelDraftValidation {
+        validate_settings_panel_draft(
+            &self.settings,
+            &self.settings_panel_draft,
+            &self.settings_editor_font_path,
+            &self.settings_ui_font_path,
+        )
+    }
+
+    pub(super) fn apply_settings_panel(&mut self) {
+        if !self.settings_panel_open {
+            self.status = "Open settings before applying changes".to_owned();
+            return;
+        }
+
+        let validation = self.settings_panel_draft_validation();
+        if !validation.has_pending_inputs() {
+            self.status = "No pending settings changes".to_owned();
+            return;
+        }
+
+        let apply_note = validation.apply_note();
+        let next_settings = validation.into_candidate();
+        if next_settings == self.settings {
+            self.sync_settings_panel_inputs();
+            self.status = match apply_note {
+                Some(note) => format!("Settings draft {note}; no saved changes"),
+                None => "Settings already match the current configuration".to_owned(),
+            };
+            return;
+        }
+
+        let previous_fonts = (
+            self.settings.font_size,
+            self.settings.ui_font_size,
+            self.settings.editor_font_path.clone(),
+            self.settings.ui_font_path.clone(),
+        );
+        let previous_read_only = self.settings.read_only;
+        let previous_vim_keybindings = self.settings.vim_keybindings;
+        let previous_inline_annotations = (self.settings.code_lens, self.settings.inlay_hints);
+        let previous_navigation_annotations = (
+            self.settings.hover_enabled,
+            self.settings.document_highlights_enabled,
+        );
+        let previous_source_control_defaults = (
+            self.settings.scm_default_view_mode,
+            self.settings.scm_default_view_sort_key,
+        );
+        let previous_terminal_shell_profile = (
+            self.settings.terminal_shell_path.clone(),
+            self.settings.terminal_shell_args.clone(),
+        );
+        let previous_blame_ignore_whitespace = self.settings.git_blame_ignore_whitespace;
+        let previous_git_enabled = self.settings.git_enabled;
+        let previous_git_autorefresh = self.settings.git_autorefresh;
+        let previous_git_ignored_repositories_key =
+            git_string_list_setting_key(&self.settings.git_ignored_repositories);
+        let previous_git_repository_scan_settings =
+            GitRepositoryScanSettings::from_settings(&self.settings);
+        let previous_diff_max_file_size_mb = self.settings.diff_max_file_size_mb;
+
+        self.settings = next_settings;
+        let terminal_shell_profile_changed = previous_terminal_shell_profile
+            != (
+                self.settings.terminal_shell_path.clone(),
+                self.settings.terminal_shell_args.clone(),
+            );
+        for buffer in &mut self.buffers {
+            buffer.set_word_separators(self.settings.word_separators.clone());
+        }
+        sync_terminal_settings(&mut self.terminal, &self.settings);
+        let restarted_terminal_sessions = if terminal_shell_profile_changed {
+            self.terminal.restart_shell_sessions_for_profile_change()
+        } else {
+            0
+        };
+        self.sync_settings_panel_inputs();
+
+        let current_fonts = (
+            self.settings.font_size,
+            self.settings.ui_font_size,
+            self.settings.editor_font_path.clone(),
+            self.settings.ui_font_path.clone(),
+        );
+        if previous_fonts != current_fonts {
+            self.fonts_dirty = true;
+        }
+        if previous_read_only != self.settings.read_only {
+            self.sync_global_read_only_buffers();
+        }
+        if previous_vim_keybindings != self.settings.vim_keybindings {
+            self.editor_vim_mode = crate::editor_vim_key_events::EditorVimMode::Normal;
+            self.editor_vim_pending_key = None;
+            self.editor_vim_last_char_find = None;
+            self.editor_vim_unnamed_register = None;
+            self.editor_vim_last_change = None;
+        }
+        if previous_inline_annotations.0 && !self.settings.code_lens {
+            self.code_lenses.clear();
+        }
+        if previous_inline_annotations.1 && !self.settings.inlay_hints {
+            self.inlay_hints.clear();
+        }
+        if (!previous_inline_annotations.0 && self.settings.code_lens)
+            || (!previous_inline_annotations.1 && self.settings.inlay_hints)
+        {
+            self.schedule_lsp_symbol_refreshes_for_open_buffers();
+        }
+        if previous_navigation_annotations.0 && !self.settings.hover_enabled {
+            self.pending_lsp_hover = None;
+            self.lsp_hover_request = None;
+            self.lsp_hover = None;
+        }
+        if previous_navigation_annotations.1 && !self.settings.document_highlights_enabled {
+            self.document_highlights_path = None;
+            self.document_highlights.clear();
+        }
+        if previous_source_control_defaults
+            != (
+                self.settings.scm_default_view_mode,
+                self.settings.scm_default_view_sort_key,
+            )
+        {
+            self.source_control_view =
+                source_control_view_mode_from_setting(self.settings.scm_default_view_mode);
+            self.source_control_sort =
+                source_control_sort_mode_from_setting(self.settings.scm_default_view_sort_key);
+            self.source_control_selected = 0;
+        }
+        if previous_blame_ignore_whitespace != self.settings.git_blame_ignore_whitespace {
+            self.sync_source_control_blame_settings();
+        }
+        let git_ignored_repositories_key =
+            git_string_list_setting_key(&self.settings.git_ignored_repositories);
+        let git_ignored_repositories_changed =
+            previous_git_ignored_repositories_key != git_ignored_repositories_key;
+        let git_repository_scan_settings_changed = previous_git_repository_scan_settings
+            != GitRepositoryScanSettings::from_settings(&self.settings);
+        if previous_diff_max_file_size_mb != self.settings.diff_max_file_size_mb
+            || previous_git_enabled != self.settings.git_enabled
+            || git_ignored_repositories_changed
+            || git_repository_scan_settings_changed
+        {
+            self.invalidate_virtual_source_control_open_requests();
+        }
+        if previous_git_enabled != self.settings.git_enabled {
+            self.sync_git_enabled_state();
+        } else if previous_git_autorefresh != self.settings.git_autorefresh {
+            self.sync_git_autorefresh_state(previous_git_autorefresh);
+        } else if git_ignored_repositories_changed {
+            self.sync_git_repository_filters_state();
+        } else if git_repository_scan_settings_changed {
+            self.spawn_git_scan();
+        }
+
+        let app_state_save_error = if previous_vim_keybindings != self.settings.vim_keybindings {
+            self.save_app_state().err()
+        } else {
+            None
+        };
+
+        let path = settings_path(&self.workspace.root);
+        match self.settings.save(&path) {
+            Ok(()) => {
+                self.status = settings_save_success_status(
+                    &path,
+                    apply_note,
+                    terminal_shell_profile_changed,
+                    restarted_terminal_sessions,
+                );
+                if let Some(error) = app_state_save_error {
+                    push_app_preference_save_failed_status(&mut self.status, error);
+                }
+            }
+            Err(error) => {
+                self.status = settings_save_failed_status(error);
+                if let Some(error) = app_state_save_error {
+                    push_app_preference_save_failed_status(&mut self.status, error);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct GitRepositoryScanSettings {
+    auto_repository_detection: kuroya_core::GitAutoRepositoryDetection,
+    ignore_submodules: bool,
+    repository_scan_ignored_folders: Vec<String>,
+    open_repository_in_parent_folders: kuroya_core::GitOpenRepositoryInParentFolders,
+    detect_submodules: bool,
+    detect_submodules_limit: usize,
+    repository_scan_max_depth: usize,
+    detect_worktrees: bool,
+    detect_worktrees_limit: usize,
+    scan_repositories: Vec<String>,
+    worktree_include_files: Vec<String>,
+    similarity_threshold: usize,
+}
+
+impl GitRepositoryScanSettings {
+    fn from_settings(settings: &kuroya_core::EditorSettings) -> Self {
+        GitRepositoryScanSettings {
+            auto_repository_detection: settings.git_auto_repository_detection,
+            ignore_submodules: settings.git_ignore_submodules,
+            repository_scan_ignored_folders: git_string_list_setting_key(
+                &settings.git_repository_scan_ignored_folders,
+            ),
+            open_repository_in_parent_folders: settings.git_open_repository_in_parent_folders,
+            detect_submodules: settings.git_detect_submodules,
+            detect_submodules_limit: settings.git_detect_submodules_limit,
+            repository_scan_max_depth: settings.git_repository_scan_max_depth,
+            detect_worktrees: settings.git_detect_worktrees,
+            detect_worktrees_limit: settings.git_detect_worktrees_limit,
+            scan_repositories: git_string_list_setting_key(&settings.git_scan_repositories),
+            worktree_include_files: git_string_list_setting_key(
+                &settings.git_worktree_include_files,
+            ),
+            similarity_threshold: settings.git_similarity_threshold,
+        }
+    }
+}
+
+fn git_string_list_setting_key(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn settings_save_success_status(
+    _path: &Path,
+    apply_note: Option<&str>,
+    terminal_shell_profile_changed: bool,
+    restarted_terminal_sessions: usize,
+) -> String {
+    let mut status = "Saved settings".to_owned();
+    if let Some(note) = apply_note {
+        status.push_str("; ");
+        status.push_str(note);
+    }
+    if restarted_terminal_sessions > 0 {
+        status.push_str("; restarted ");
+        status.push_str(&restarted_terminal_sessions.to_string());
+        status.push_str(if restarted_terminal_sessions == 1 {
+            " terminal with the selected provider"
+        } else {
+            " terminals with the selected provider"
+        });
+    } else if terminal_shell_profile_changed {
+        status.push_str("; new terminals use the selected provider");
+    }
+    status
+}
+
+fn settings_save_failed_status(error: impl Display) -> String {
+    let error = error.to_string();
+    let error = display_error_label_cow(&error);
+    format!("Settings changed, but save failed: {}", error.as_ref())
+}
+
+fn push_app_preference_save_failed_status(status: &mut String, error: impl Display) {
+    let error = error.to_string();
+    let error = display_error_label_cow(&error);
+    status.push_str("; app preference save failed: ");
+    status.push_str(error.as_ref());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        app_startup_context::AppStartupContext, lsp_runtime::LSP_SYMBOL_REFRESH_DEBOUNCE,
+        lsp_runtime::due_lsp_symbol_refresh_ids, path_display::DISPLAY_ERROR_LABEL_MAX_CHARS,
+        terminal::TerminalPane, workspace_state::settings_path,
+    };
+    use kuroya_core::{EditorSettings, TextBuffer, Workspace};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{Instant, SystemTime, UNIX_EPOCH},
+    };
+    use tokio::runtime::Runtime;
+
+    #[test]
+    fn apply_settings_panel_schedules_refresh_when_code_lens_is_reenabled() {
+        let root = temp_root("code-lens-reenabled");
+        let settings = EditorSettings {
+            code_lens: false,
+            inlay_hints: false,
+            ..EditorSettings::default()
+        };
+        let mut app = app_for_test(root.clone(), settings);
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(root.join("src").join("main.rs")),
+            "fn main() {}\n".to_owned(),
+        ));
+
+        app.settings_panel_draft.code_lens = true;
+        app.settings_panel_draft.inlay_hints = false;
+        app.apply_settings_panel();
+
+        assert_due_refresh_ids(&app, &[7]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_schedules_refresh_when_inlay_hints_are_reenabled() {
+        let root = temp_root("inlay-hints-reenabled");
+        let settings = EditorSettings {
+            code_lens: false,
+            inlay_hints: false,
+            ..EditorSettings::default()
+        };
+        let mut app = app_for_test(root.clone(), settings);
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(root.join("src").join("main.rs")),
+            "fn main() {}\n".to_owned(),
+        ));
+
+        app.settings_panel_draft.code_lens = false;
+        app.settings_panel_draft.inlay_hints = true;
+        app.apply_settings_panel();
+
+        assert_due_refresh_ids(&app, &[7]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_normalizes_invalid_numeric_draft_without_saving_when_unchanged() {
+        let root = temp_root("invalid-numeric-draft");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+
+        app.settings_panel_draft.font_size = f32::NAN;
+        app.settings_panel_draft.terminal_line_height = f32::INFINITY;
+        app.apply_settings_panel();
+
+        assert!(app.settings.font_size.is_finite());
+        assert!(app.settings.terminal_line_height.is_finite());
+        assert_eq!(app.settings_panel_draft.font_size, app.settings.font_size);
+        assert_eq!(
+            app.settings_panel_draft.terminal_line_height,
+            app.settings.terminal_line_height
+        );
+        assert!(app.status.contains("normalized invalid draft values"));
+        assert!(!settings_path(&root).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_rejects_closed_panel_draft() {
+        let root = temp_root("closed-panel-draft");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        app.settings_panel_open = false;
+        app.settings_panel_draft.font_size = 18.0;
+
+        app.apply_settings_panel();
+
+        assert_eq!(app.settings.font_size, EditorSettings::default().font_size);
+        assert_eq!(app.status, "Open settings before applying changes");
+        assert!(!settings_path(&root).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_does_not_scan_for_whitespace_only_scan_setting_changes() {
+        let root = temp_root("scan-whitespace");
+        let settings = EditorSettings {
+            git_enabled: true,
+            git_repository_scan_ignored_folders: vec!["node_modules".to_owned()],
+            git_scan_repositories: vec!["../repo".to_owned()],
+            git_worktree_include_files: vec!["packages/app".to_owned()],
+            ..EditorSettings::default()
+        };
+        let mut app = app_for_test(root.clone(), settings);
+
+        app.settings_panel_draft.status_bar_visible = !app.settings.status_bar_visible;
+        app.settings_panel_draft.git_repository_scan_ignored_folders =
+            vec![" node_modules ".to_owned()];
+        app.settings_panel_draft.git_scan_repositories = vec![" ../repo ".to_owned()];
+        app.settings_panel_draft.git_worktree_include_files = vec![" packages/app ".to_owned()];
+
+        app.apply_settings_panel();
+
+        assert_eq!(
+            app.settings.git_repository_scan_ignored_folders,
+            [" node_modules ".to_owned()]
+        );
+        assert_eq!(app.settings.git_scan_repositories, [" ../repo ".to_owned()]);
+        assert_eq!(
+            app.settings.git_worktree_include_files,
+            [" packages/app ".to_owned()]
+        );
+        assert_eq!(app.git_scan_active_request_id, 0);
+        assert_eq!(app.git_scan_in_flight_request_id, None);
+        assert!(app.active_async_tasks.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn settings_save_success_status_omits_internal_settings_path() {
+        let path = PathBuf::from("workspace/.kuroya")
+            .join(format!("bad\n{}\u{202e}.toml", "segment-".repeat(40)));
+
+        let status =
+            settings_save_success_status(&path, Some("normalized invalid draft values"), false, 0);
+
+        assert_eq!(status, "Saved settings; normalized invalid draft values");
+        assert!(!status.contains("workspace"));
+        assert!(!status.contains(".kuroya"));
+        assert!(!status.contains('\n'));
+        assert!(!status.contains('\u{202e}'));
+    }
+
+    #[test]
+    fn settings_save_success_status_mentions_terminal_provider_change() {
+        let status = settings_save_success_status(
+            Path::new("workspace/.kuroya/settings.toml"),
+            None,
+            true,
+            0,
+        );
+
+        assert!(status.contains("new terminals use the selected provider"));
+    }
+
+    #[test]
+    fn settings_save_success_status_mentions_restarted_provider_sessions() {
+        let status = settings_save_success_status(
+            Path::new("workspace/.kuroya/settings.toml"),
+            None,
+            true,
+            2,
+        );
+
+        assert!(status.contains("restarted 2 terminals with the selected provider"));
+        assert!(!status.contains("new terminals use the selected provider"));
+    }
+
+    #[test]
+    fn settings_save_failed_status_sanitizes_and_bounds_error() {
+        let error = format!(
+            "first line\nsecond line \u{202e}{}",
+            "x".repeat(DISPLAY_ERROR_LABEL_MAX_CHARS * 2)
+        );
+
+        let status = settings_save_failed_status(&error);
+
+        assert!(!status.contains('\n'));
+        assert!(!status.contains('\u{202e}'));
+        assert!(status.contains("..."));
+        assert!(
+            status.chars().count()
+                <= "Settings changed, but save failed: ".chars().count()
+                    + DISPLAY_ERROR_LABEL_MAX_CHARS
+        );
+    }
+
+    fn assert_due_refresh_ids(app: &KuroyaApp, expected: &[u64]) {
+        assert_eq!(
+            due_lsp_symbol_refresh_ids(
+                &app.pending_lsp_symbol_refreshes,
+                Instant::now(),
+                LSP_SYMBOL_REFRESH_DEBOUNCE,
+            ),
+            expected
+        );
+    }
+
+    fn app_for_test(root: PathBuf, settings: EditorSettings) -> KuroyaApp {
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let mut app = KuroyaApp::from_startup_context(AppStartupContext {
+            runtime: Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: Workspace::new(root.clone()),
+            settings: settings.clone(),
+            settings_panel_draft: settings,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: TerminalPane::new(root.clone(), 100, 12.0, 1.2),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![root],
+            now: Instant::now(),
+            startup_timings: Vec::new(),
+        });
+        app.settings_panel_open = true;
+        app
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!(
+            "kuroya-apply-settings-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+}

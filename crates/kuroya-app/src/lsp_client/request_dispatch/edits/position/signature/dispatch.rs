@@ -1,0 +1,37 @@
+use super::super::super::super::reserve_request_id;
+use super::pending::register_signature_help_request;
+use crate::lsp_client::{
+    pending::{PendingLspRequest, lsp_request_target_is_valid},
+    request_dispatch::write_request_message,
+};
+use kuroya_core::{BufferId, LspWireMessage};
+use std::{collections::HashMap, path::PathBuf};
+use tokio::process::ChildStdin;
+
+pub(super) async fn dispatch_signature_help(
+    id: BufferId,
+    path: PathBuf,
+    version: u64,
+    line: usize,
+    character: usize,
+    writer: &mut ChildStdin,
+    next_request_id: &mut u64,
+    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+) -> bool {
+    if !lsp_request_target_is_valid(id, &path) {
+        return true;
+    }
+
+    let request_id = reserve_request_id(next_request_id, pending_requests);
+    let message = LspWireMessage::signature_help(request_id, &path, line, character).to_json();
+    register_signature_help_request(
+        request_id,
+        id,
+        path,
+        version,
+        line,
+        character,
+        pending_requests,
+    );
+    write_request_message(writer, pending_requests, request_id, message).await
+}

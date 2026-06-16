@@ -1,0 +1,15 @@
+mod commands;
+mod diagnostics;
+mod editor;
+mod explorer;
+mod folding;
+mod layout;
+mod lsp;
+mod navigation;
+mod platform;
+mod preferences;
+mod project_search;
+mod save_lifecycle;
+mod session;
+mod source_control;
+mod workspace;

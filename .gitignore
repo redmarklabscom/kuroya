@@ -1,0 +1,17 @@
+/target/
+/target-*/
+/.cargo-target-*/
+/.cargo-target*/
+/.ferro/
+/dist/
+/.kuroya/
+/.tools/
+/workspace/.kuroya/
+**/.kuroya/
+**/*.tmp.*
+/created.md
+/kuroya-*.png
+/assets/logos/logo-concept-*.png
+/assets/logos/logo-concepts-*.png
+/assets/logos/editor-logo-concepts*/
+*.log

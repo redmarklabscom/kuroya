@@ -1,0 +1,675 @@
+use crate::{
+    KuroyaApp,
+    lsp_client::{LspClientHandle, can_use_server_for_path},
+    lsp_lifecycle::background_language_block_reason,
+    lsp_text_positions::buffer_position_to_lsp_utf16_column,
+    path_display::{display_error_label_cow, display_path_label_cow, sanitized_display_label_cow},
+};
+use kuroya_core::{
+    BufferId, LanguageId, LspServerConfig, TextBuffer, default_server_configs, lsp_language_id,
+};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
+
+mod document_sync;
+
+pub(crate) const LSP_MAX_RESTART_ATTEMPTS: u8 = 3;
+pub(crate) const LSP_RESTART_BASE_DELAY: Duration = Duration::from_millis(250);
+pub(crate) const LSP_SYMBOL_REFRESH_DEBOUNCE: Duration = Duration::from_millis(240);
+pub(crate) const LSP_LANGUAGE_LABEL_MAX_CHARS: usize = 64;
+pub(crate) const LSP_STATUS_MESSAGE_MAX_CHARS: usize = 160;
+const LSP_METHOD_LABEL_MAX_CHARS: usize = 96;
+static LSP_SERVER_CONFIGS: OnceLock<Vec<LspServerConfig>> = OnceLock::new();
+
+pub(crate) fn lsp_command_queue_failed_status(method: &str) -> String {
+    format!(
+        "Could not queue LSP request: {}",
+        lsp_method_display_label_cow(method)
+    )
+}
+
+pub(crate) fn lsp_buffer_synced_status(path: &Path, version: u64) -> String {
+    let path = display_path_label_cow(path);
+    format!("{} synced with LSP at v{version}", path.as_ref())
+}
+
+pub(crate) fn lsp_language_display_label(language: &str) -> String {
+    lsp_language_display_label_cow(language).into_owned()
+}
+
+pub(crate) fn lsp_status_display_message(message: &str) -> String {
+    lsp_status_display_message_cow(message).into_owned()
+}
+
+fn lsp_method_display_label_cow(method: &str) -> Cow<'_, str> {
+    sanitized_display_label_cow(method, LSP_METHOD_LABEL_MAX_CHARS, "unknown method")
+}
+
+fn lsp_language_display_label_cow(language: &str) -> Cow<'_, str> {
+    sanitized_display_label_cow(language, LSP_LANGUAGE_LABEL_MAX_CHARS, "Unknown")
+}
+
+fn lsp_status_display_message_cow(message: &str) -> Cow<'_, str> {
+    sanitized_display_label_cow(message, LSP_STATUS_MESSAGE_MAX_CHARS, "LSP status")
+}
+
+pub(crate) fn lsp_read_error_status_message(language: &str, error: &anyhow::Error) -> String {
+    let language = lsp_language_display_label_cow(language);
+    let error_text = error.to_string();
+    let error = display_error_label_cow(&error_text);
+    let message = format!("{language} LSP read error: {error}");
+    lsp_status_display_message_cow(&message).into_owned()
+}
+
+pub(crate) fn lsp_stopped_status_message(language: &str) -> String {
+    let language = lsp_language_display_label_cow(language);
+    let message = format!("{language} LSP stopped");
+    lsp_status_display_message_cow(&message).into_owned()
+}
+
+pub(crate) fn lsp_server_ready_status(language: &str) -> String {
+    format!("{} LSP ready", lsp_language_display_label_cow(language))
+}
+
+pub(crate) fn lsp_stopped_no_buffers_status(language: &str) -> String {
+    format!(
+        "{} LSP stopped; no open buffers to restart",
+        lsp_language_display_label_cow(language)
+    )
+}
+
+pub(crate) fn lsp_stopped_disabled_status(language: &str) -> String {
+    format!(
+        "{} LSP stopped repeatedly; restart disabled",
+        lsp_language_display_label_cow(language)
+    )
+}
+
+pub(crate) fn lsp_stopped_restart_scheduled_status(language: &str, reopened: usize) -> String {
+    format!(
+        "{} LSP stopped; restart scheduled for {reopened} open buffer(s)",
+        lsp_language_display_label_cow(language)
+    )
+}
+
+pub(crate) fn lsp_restart_skipped_restricted_status(language: &str) -> String {
+    format!(
+        "{} LSP restart skipped; workspace is restricted",
+        lsp_language_display_label_cow(language)
+    )
+}
+
+pub(crate) fn lsp_restart_skipped_no_buffers_status(language: &str) -> String {
+    format!(
+        "{} LSP restart skipped; no eligible open buffers",
+        lsp_language_display_label_cow(language)
+    )
+}
+
+pub(crate) fn lsp_restart_requested_status(language: &str, reopened: usize) -> String {
+    format!(
+        "{} LSP restart requested for {reopened} open buffer(s)",
+        lsp_language_display_label_cow(language)
+    )
+}
+
+pub(crate) fn lsp_stopped_workspace_symbol_reason(language: &str) -> String {
+    format!("{} LSP stopped", lsp_language_display_label_cow(language))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LspRestartDecision {
+    NoEligibleBuffers,
+    Restart { attempt: u8 },
+    Disable,
+}
+
+pub(crate) fn lsp_server_config_for_language(
+    language: LanguageId,
+) -> Option<&'static LspServerConfig> {
+    let wanted = lsp_language_id(language);
+    LSP_SERVER_CONFIGS
+        .get_or_init(default_server_configs)
+        .iter()
+        .find(|config| config.language == wanted)
+}
+
+impl KuroyaApp {
+    pub(crate) fn ensure_lsp_for_buffer(&mut self, id: BufferId) -> Option<LspClientHandle> {
+        if !self.workspace_trusted {
+            return None;
+        }
+
+        let config = {
+            let buffer = self.buffer(id)?;
+            if background_language_block_reason(
+                id,
+                buffer,
+                &self.lossy_decoded_buffers,
+                &self.binary_preview_buffers,
+            )
+            .is_some()
+            {
+                return None;
+            }
+            let config = lsp_server_config_for_language(buffer.language())?;
+            if self.lsp_unavailable.contains(config.language.as_str()) {
+                return None;
+            }
+            if let Some(client) = self.lsp_clients.get(config.language.as_str()) {
+                return Some(client.clone());
+            }
+            if !can_use_server_for_path(config, &self.workspace.root, buffer.path()?) {
+                return None;
+            }
+            config.clone()
+        };
+
+        let key = config.language.clone();
+        let handle = LspClientHandle::spawn_on(
+            &self.runtime,
+            config,
+            self.workspace.root.clone(),
+            self.tx.clone(),
+        );
+        clear_pending_lsp_restart_for_started_client(&mut self.pending_lsp_restarts, &key);
+        self.lsp_clients.insert(key, handle.clone());
+        Some(handle)
+    }
+
+    pub(crate) fn active_lsp_position(&self) -> Option<(BufferId, PathBuf, u64, usize, usize)> {
+        let id = self.active?;
+        self.lsp_position_for_buffer(id)
+    }
+
+    pub(crate) fn lsp_position_for_buffer(
+        &self,
+        id: BufferId,
+    ) -> Option<(BufferId, PathBuf, u64, usize, usize)> {
+        let cursor = self.buffer(id)?.cursor();
+        self.lsp_position_for_buffer_char(id, cursor)
+    }
+
+    pub(crate) fn lsp_position_for_buffer_char(
+        &self,
+        id: BufferId,
+        char_idx: usize,
+    ) -> Option<(BufferId, PathBuf, u64, usize, usize)> {
+        let buffer = self.buffer(id)?;
+        if background_language_block_reason(
+            id,
+            buffer,
+            &self.lossy_decoded_buffers,
+            &self.binary_preview_buffers,
+        )
+        .is_some()
+        {
+            return None;
+        }
+        let path = buffer.path()?.clone();
+        let version = buffer.version();
+        let position = buffer.char_position(char_idx.min(buffer.len_chars()));
+        let character =
+            buffer_position_to_lsp_utf16_column(buffer, position.line, position.column)?;
+        Some((id, path, version, position.line, character))
+    }
+
+    pub(crate) fn flush_pending_lsp_restarts(&mut self) -> usize {
+        let languages =
+            take_due_lsp_restart_languages(&mut self.pending_lsp_restarts, Instant::now());
+        let mut restarted = 0usize;
+        for language in languages {
+            let client_active = self.lsp_clients.contains_key(&language);
+            let unavailable = self.lsp_unavailable.contains(&language);
+            if !pending_lsp_restart_should_run(self.workspace_trusted, client_active, unavailable) {
+                if unavailable || !self.workspace_trusted {
+                    self.lsp_restart_attempts.remove(&language);
+                }
+                if !self.workspace_trusted {
+                    self.status = lsp_restart_skipped_restricted_status(&language);
+                }
+                continue;
+            }
+
+            let restart_targets = lsp_restart_buffer_ids(
+                &language,
+                &self.buffers,
+                &self.workspace.root,
+                &self.lossy_decoded_buffers,
+                &self.binary_preview_buffers,
+            );
+            if restart_targets.is_empty() {
+                self.lsp_restart_attempts.remove(&language);
+                self.status = lsp_restart_skipped_no_buffers_status(&language);
+                continue;
+            }
+
+            for id in &restart_targets {
+                self.notify_lsp_open(*id);
+            }
+            restarted = restarted.saturating_add(1);
+            self.status = lsp_restart_requested_status(&language, restart_targets.len());
+        }
+        restarted
+    }
+}
+
+pub(crate) fn pending_lsp_restart_should_run(
+    workspace_trusted: bool,
+    client_active: bool,
+    unavailable: bool,
+) -> bool {
+    workspace_trusted && !client_active && !unavailable
+}
+
+pub(crate) fn clear_pending_lsp_restart_for_started_client(
+    pending: &mut HashMap<String, Instant>,
+    language: &str,
+) -> bool {
+    pending.remove(language).is_some()
+}
+
+pub(crate) fn lsp_restart_decision(
+    current_attempts: Option<u8>,
+    eligible_buffer_count: usize,
+    max_attempts: u8,
+) -> LspRestartDecision {
+    if eligible_buffer_count == 0 {
+        return LspRestartDecision::NoEligibleBuffers;
+    }
+
+    let attempt = current_attempts.unwrap_or_default().saturating_add(1);
+    if attempt > max_attempts {
+        LspRestartDecision::Disable
+    } else {
+        LspRestartDecision::Restart { attempt }
+    }
+}
+
+pub(crate) fn lsp_restart_buffer_ids(
+    language: &str,
+    buffers: &[TextBuffer],
+    root: &Path,
+    lossy_buffers: &HashSet<BufferId>,
+    binary_buffers: &HashSet<BufferId>,
+) -> Vec<BufferId> {
+    buffers
+        .iter()
+        .filter_map(|buffer| {
+            let id = buffer.id();
+            if background_language_block_reason(id, buffer, lossy_buffers, binary_buffers).is_some()
+            {
+                return None;
+            }
+
+            if lsp_language_id(buffer.language()) != language {
+                return None;
+            }
+
+            let path = buffer.path()?;
+            let config = lsp_server_config_for_language(buffer.language())?;
+            can_use_server_for_path(config, root, path).then_some(id)
+        })
+        .collect()
+}
+
+pub(crate) fn schedule_lsp_restart_at(now: Instant, attempt: u8) -> Instant {
+    now + lsp_restart_delay(attempt, LSP_RESTART_BASE_DELAY)
+}
+
+pub(crate) fn lsp_restart_delay(attempt: u8, base: Duration) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(4);
+    let multiplier = 1u32 << exponent;
+    base.checked_mul(multiplier).unwrap_or(base)
+}
+
+#[cfg(test)]
+pub(crate) fn due_lsp_restart_languages(
+    pending: &HashMap<String, Instant>,
+    now: Instant,
+) -> Vec<String> {
+    let mut languages = Vec::with_capacity(pending.len());
+    languages.extend(
+        pending
+            .iter()
+            .filter_map(|(language, due)| (*due <= now).then_some(language.clone())),
+    );
+    languages.sort();
+    languages
+}
+
+pub(crate) fn take_due_lsp_restart_languages(
+    pending: &mut HashMap<String, Instant>,
+    now: Instant,
+) -> Vec<String> {
+    let mut languages = Vec::with_capacity(pending.len());
+    pending.retain(|language, due| {
+        if *due <= now {
+            languages.push(language.clone());
+            false
+        } else {
+            true
+        }
+    });
+    languages.sort();
+    languages
+}
+
+#[cfg(test)]
+pub(crate) fn due_lsp_symbol_refresh_ids(
+    pending: &HashMap<BufferId, Instant>,
+    now: Instant,
+    debounce: Duration,
+) -> Vec<BufferId> {
+    let mut ids = Vec::with_capacity(pending.len());
+    ids.extend(pending.iter().filter_map(|(id, scheduled)| {
+        (now.saturating_duration_since(*scheduled) >= debounce).then_some(*id)
+    }));
+    ids.sort_unstable();
+    ids
+}
+
+pub(crate) fn take_due_lsp_symbol_refresh_ids(
+    pending: &mut HashMap<BufferId, Instant>,
+    now: Instant,
+    debounce: Duration,
+) -> Vec<BufferId> {
+    let mut ids = Vec::with_capacity(pending.len());
+    pending.retain(|id, scheduled| {
+        if now.saturating_duration_since(*scheduled) >= debounce {
+            ids.push(*id);
+            false
+        } else {
+            true
+        }
+    });
+    ids.sort_unstable();
+    ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LSP_LANGUAGE_LABEL_MAX_CHARS, LSP_METHOD_LABEL_MAX_CHARS, LSP_STATUS_MESSAGE_MAX_CHARS,
+        buffer_position_to_lsp_utf16_column, due_lsp_restart_languages,
+        lsp_command_queue_failed_status, lsp_language_display_label,
+        lsp_language_display_label_cow, lsp_method_display_label_cow,
+        lsp_read_error_status_message, lsp_restart_requested_status,
+        lsp_restart_skipped_no_buffers_status, lsp_restart_skipped_restricted_status,
+        lsp_server_config_for_language, lsp_status_display_message, lsp_status_display_message_cow,
+        lsp_stopped_disabled_status, lsp_stopped_no_buffers_status,
+        lsp_stopped_restart_scheduled_status, lsp_stopped_status_message,
+        take_due_lsp_restart_languages, take_due_lsp_symbol_refresh_ids,
+    };
+    use crate::path_display::sanitized_display_label;
+    use kuroya_core::{LanguageId, TextBuffer};
+    use std::{
+        borrow::Cow,
+        collections::{HashMap, HashSet},
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn lsp_cursor_positions_use_utf16_columns() {
+        let mut buffer = TextBuffer::from_text(1, None, "😀alpha".to_owned());
+        buffer.set_single_cursor(buffer.line_column_to_char(0, 1));
+        let position = buffer.cursor_position();
+
+        assert_eq!(
+            buffer_position_to_lsp_utf16_column(&buffer, position.line, position.column),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn lsp_status_messages_sanitize_language_error_and_method_labels() {
+        let language = format!(
+            "rust\n{}\u{202e}",
+            "language-fragment-".repeat(LSP_LANGUAGE_LABEL_MAX_CHARS)
+        );
+        let error = anyhow::anyhow!(
+            "first line\nsecond line \u{2066}{}",
+            "error-fragment-".repeat(LSP_STATUS_MESSAGE_MAX_CHARS)
+        );
+        let method = format!(
+            "textDocument\n{}\u{202e}",
+            "method-fragment-".repeat(LSP_METHOD_LABEL_MAX_CHARS)
+        );
+
+        let read_error = lsp_read_error_status_message(&language, &error);
+        let stopped = lsp_stopped_status_message(&language);
+        let queue_failed = lsp_command_queue_failed_status(&method);
+
+        assert_display_safe(&read_error);
+        assert_display_safe(&stopped);
+        assert_display_safe(&queue_failed);
+        assert!(read_error.chars().count() <= LSP_STATUS_MESSAGE_MAX_CHARS);
+        assert!(stopped.chars().count() <= LSP_STATUS_MESSAGE_MAX_CHARS);
+        assert!(
+            queue_failed.chars().count()
+                <= "Could not queue LSP request: ".chars().count() + LSP_METHOD_LABEL_MAX_CHARS
+        );
+        assert!(read_error.contains("..."));
+        assert!(queue_failed.contains("..."));
+    }
+
+    #[test]
+    fn lsp_display_label_cow_helpers_borrow_clean_ascii_and_unicode() {
+        assert!(matches!(
+            lsp_method_display_label_cow("textDocument/hover"),
+            Cow::Borrowed("textDocument/hover")
+        ));
+        assert!(matches!(
+            lsp_language_display_label_cow("rust"),
+            Cow::Borrowed("rust")
+        ));
+        assert!(matches!(
+            lsp_status_display_message_cow("Rust LSP ready"),
+            Cow::Borrowed("Rust LSP ready")
+        ));
+
+        let method = "workspace/\u{03bb}";
+        let language = "rust-\u{03bb}";
+        let status = "Rust \u{03bb} LSP ready";
+
+        match lsp_method_display_label_cow(method) {
+            Cow::Borrowed(label) => assert_eq!(label, method),
+            Cow::Owned(label) => panic!("expected borrowed method label, got {label:?}"),
+        }
+        match lsp_language_display_label_cow(language) {
+            Cow::Borrowed(label) => assert_eq!(label, language),
+            Cow::Owned(label) => panic!("expected borrowed language label, got {label:?}"),
+        }
+        match lsp_status_display_message_cow(status) {
+            Cow::Borrowed(label) => assert_eq!(label, status),
+            Cow::Owned(label) => panic!("expected borrowed status label, got {label:?}"),
+        }
+    }
+
+    #[test]
+    fn lsp_display_label_cow_helpers_own_dirty_truncated_and_fallback_labels() {
+        let dirty_method = lsp_method_display_label_cow("textDocument\n\u{202e}hover");
+        let blank_method = lsp_method_display_label_cow("\n\u{202e}\t");
+        let blank_language = lsp_language_display_label_cow("\n\u{202e}\t");
+        let blank_status = lsp_status_display_message_cow("\n\u{202e}\t");
+        let long_language = "language-fragment-".repeat(LSP_LANGUAGE_LABEL_MAX_CHARS);
+        let truncated_language = lsp_language_display_label_cow(&long_language);
+
+        assert_eq!(dirty_method.as_ref(), "textDocument hover");
+        assert_eq!(blank_method.as_ref(), "unknown method");
+        assert_eq!(blank_language.as_ref(), "Unknown");
+        assert_eq!(blank_status.as_ref(), "LSP status");
+        assert_display_safe(&dirty_method);
+        assert!(truncated_language.contains("..."), "{truncated_language}");
+        assert!(truncated_language.chars().count() <= LSP_LANGUAGE_LABEL_MAX_CHARS);
+
+        assert!(matches!(dirty_method, Cow::Owned(_)));
+        assert!(matches!(blank_method, Cow::Owned(_)));
+        assert!(matches!(blank_language, Cow::Owned(_)));
+        assert!(matches!(blank_status, Cow::Owned(_)));
+        assert!(matches!(truncated_language, Cow::Owned(_)));
+    }
+
+    #[test]
+    fn lsp_display_label_cow_helpers_match_wrappers_and_status_output() {
+        for language in ["rust", "rust\n\u{202e}", "\n\u{202e}\t"] {
+            let expected =
+                sanitized_display_label(language, LSP_LANGUAGE_LABEL_MAX_CHARS, "Unknown");
+
+            assert_eq!(lsp_language_display_label_cow(language).as_ref(), expected);
+            assert_eq!(lsp_language_display_label(language), expected);
+        }
+
+        let long_language = "language-fragment-".repeat(LSP_LANGUAGE_LABEL_MAX_CHARS);
+        let expected_language =
+            sanitized_display_label(&long_language, LSP_LANGUAGE_LABEL_MAX_CHARS, "Unknown");
+        assert_eq!(
+            lsp_language_display_label_cow(&long_language).as_ref(),
+            expected_language
+        );
+        assert_eq!(
+            lsp_language_display_label(&long_language),
+            expected_language
+        );
+
+        for message in ["Rust LSP ready", "Rust\n\u{202e}LSP ready", "\n\u{202e}\t"] {
+            let expected =
+                sanitized_display_label(message, LSP_STATUS_MESSAGE_MAX_CHARS, "LSP status");
+
+            assert_eq!(lsp_status_display_message_cow(message).as_ref(), expected);
+            assert_eq!(lsp_status_display_message(message), expected);
+        }
+
+        for method in [
+            "textDocument/hover",
+            "textDocument\n\u{202e}hover",
+            "\n\u{202e}\t",
+        ] {
+            assert_eq!(
+                lsp_method_display_label_cow(method).as_ref(),
+                sanitized_display_label(method, LSP_METHOD_LABEL_MAX_CHARS, "unknown method")
+            );
+            assert_eq!(
+                lsp_command_queue_failed_status(method),
+                format!(
+                    "Could not queue LSP request: {}",
+                    sanitized_display_label(method, LSP_METHOD_LABEL_MAX_CHARS, "unknown method")
+                )
+            );
+        }
+
+        let language = "rust\n\u{202e}";
+        let language_label =
+            sanitized_display_label(language, LSP_LANGUAGE_LABEL_MAX_CHARS, "Unknown");
+        assert_eq!(
+            lsp_stopped_status_message(language),
+            sanitized_display_label(
+                &format!("{language_label} LSP stopped"),
+                LSP_STATUS_MESSAGE_MAX_CHARS,
+                "LSP status"
+            )
+        );
+    }
+
+    #[test]
+    fn lsp_restart_statuses_sanitize_overlong_language_labels() {
+        let language = format!(
+            "rust\n{}\u{202e}",
+            "language-fragment-".repeat(LSP_LANGUAGE_LABEL_MAX_CHARS)
+        );
+        let statuses = [
+            lsp_stopped_no_buffers_status(&language),
+            lsp_stopped_disabled_status(&language),
+            lsp_stopped_restart_scheduled_status(&language, 3),
+            lsp_restart_skipped_restricted_status(&language),
+            lsp_restart_skipped_no_buffers_status(&language),
+            lsp_restart_requested_status(&language, 3),
+        ];
+
+        for status in statuses {
+            assert_display_safe(&status);
+            assert!(status.contains("..."));
+            assert!(status.chars().count() <= LSP_LANGUAGE_LABEL_MAX_CHARS + 58);
+        }
+    }
+
+    #[test]
+    fn due_lsp_restart_languages_preserves_raw_restart_keys() {
+        let now = Instant::now();
+        let raw_language = "rust\n\u{202e}".to_owned();
+        let pending = HashMap::from([(raw_language.clone(), now)]);
+
+        assert_eq!(due_lsp_restart_languages(&pending, now), vec![raw_language]);
+    }
+
+    #[test]
+    fn take_due_lsp_restart_languages_removes_only_ready_entries() {
+        let now = Instant::now();
+        let later = now + Duration::from_millis(50);
+        let mut pending = HashMap::from([
+            ("python".to_owned(), later),
+            ("rust".to_owned(), now),
+            ("go".to_owned(), now - Duration::from_millis(1)),
+        ]);
+
+        assert_eq!(
+            take_due_lsp_restart_languages(&mut pending, now),
+            vec!["go".to_owned(), "rust".to_owned()]
+        );
+        assert_eq!(
+            pending.keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from(["python".to_owned()])
+        );
+    }
+
+    #[test]
+    fn lsp_server_config_lookup_reuses_cached_defaults() {
+        let first = lsp_server_config_for_language(LanguageId::Rust).expect("rust config");
+        let second = lsp_server_config_for_language(LanguageId::Rust).expect("rust config");
+
+        assert!(std::ptr::eq(first, second));
+        assert_eq!(first.language, "rust");
+        assert!(lsp_server_config_for_language(LanguageId::Markdown).is_none());
+    }
+
+    #[test]
+    fn take_due_lsp_symbol_refresh_ids_drains_ready_ids() {
+        let now = Instant::now();
+        let debounce = Duration::from_millis(25);
+        let mut pending = HashMap::from([
+            (9, now),
+            (3, now - debounce),
+            (7, now - debounce - Duration::from_millis(1)),
+        ]);
+
+        assert_eq!(
+            take_due_lsp_symbol_refresh_ids(&mut pending, now, debounce),
+            vec![3, 7]
+        );
+        assert_eq!(
+            pending.keys().copied().collect::<HashSet<_>>(),
+            HashSet::from([9])
+        );
+    }
+
+    fn assert_display_safe(value: &str) {
+        assert!(!value.chars().any(char::is_control), "{value:?}");
+        assert!(!value.chars().any(is_bidi_format_control), "{value:?}");
+    }
+
+    fn is_bidi_format_control(ch: char) -> bool {
+        matches!(
+            ch,
+            '\u{061c}'
+                | '\u{200e}'
+                | '\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+        )
+    }
+}
