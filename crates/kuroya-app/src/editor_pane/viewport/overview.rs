@@ -60,7 +60,7 @@ pub(super) fn paint_scm_diff_overview_ruler(
         painter.rect_filled(
             overview_ruler_border_rect(scroll_rect, overview_ruler_lanes),
             0.0,
-            Color32::from_rgb(47, 47, 47),
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
         );
     }
     if diff_lines.is_empty() && cursor_lines.is_empty() {
@@ -94,7 +94,7 @@ pub(super) fn paint_scm_diff_overview_ruler(
                 overview_ruler_lanes,
             ),
             0.0,
-            Color32::from_rgb(191, 191, 191),
+            ui.visuals().text_color(),
         );
     }
 }

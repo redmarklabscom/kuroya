@@ -64,14 +64,19 @@ fn format_from_style(style: Style, font_size: f32) -> TextFormat {
     }
 }
 
-pub(crate) fn plain_job(text: &str, font_size: f32, tab_width: usize) -> LayoutJob {
+pub(crate) fn plain_job(
+    text: &str,
+    font_size: f32,
+    tab_width: usize,
+    text_color: Color32,
+) -> LayoutJob {
     let (font_size, tab_width) = normalize_layout_inputs(font_size, tab_width);
     let mut job = layout_job_with_text_capacity(expanded_text_capacity(text, tab_width));
     let mut visual_column = 0usize;
     append_text_with_expanded_tabs(
         &mut job,
         text,
-        plain_format(font_size),
+        plain_format(font_size, text_color),
         &mut visual_column,
         tab_width,
     );
@@ -85,10 +90,10 @@ fn layout_job_with_text_capacity(capacity: usize) -> LayoutJob {
     }
 }
 
-fn plain_format(font_size: f32) -> TextFormat {
+fn plain_format(font_size: f32, text_color: Color32) -> TextFormat {
     TextFormat {
         font_id: FontId::new(font_size, FontFamily::Monospace),
-        color: Color32::from_rgb(222, 226, 233),
+        color: text_color,
         ..Default::default()
     }
 }
@@ -189,13 +194,25 @@ fn append_spaces(job: &mut LayoutJob, spaces: usize, format: TextFormat) {
 mod tests {
     use super::{
         MAX_TAB_WIDTH, advance_highlight_state, append_spaces, expanded_text_capacity,
-        highlighted_job, plain_job, text_columns_without_tabs,
+        highlighted_job, plain_job as build_plain_job, text_columns_without_tabs,
     };
     use egui::{TextFormat, text::LayoutJob};
     use syntect::{
         highlighting::{HighlightState, Highlighter, ThemeSet},
         parsing::{ParseState, ScopeStack, SyntaxSet},
     };
+
+    fn plain_job(text: &str, font_size: f32, tab_width: usize) -> LayoutJob {
+        build_plain_job(text, font_size, tab_width, egui::Color32::WHITE)
+    }
+
+    #[test]
+    fn plain_layout_uses_supplied_theme_text_color() {
+        let text_color = egui::Color32::from_rgb(17, 29, 43);
+        let job = build_plain_job("text", 13.0, 4, text_color);
+
+        assert_eq!(job.sections[0].format.color, text_color);
+    }
 
     #[test]
     fn plain_layout_expands_tabs_to_configured_tab_stops() {

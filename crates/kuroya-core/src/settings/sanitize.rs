@@ -270,7 +270,7 @@ pub(super) fn normalize_settings_plain_string_owned(
     normalized
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn normalize_settings_display_text(
     value: &str,
     max_chars: usize,

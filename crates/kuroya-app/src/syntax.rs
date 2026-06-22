@@ -6,7 +6,7 @@ use crate::{
     syntax_layout::{advance_highlight_state, highlighted_job, normalize_layout_inputs, plain_job},
 };
 use anyhow::Context;
-use egui::text::LayoutJob;
+use egui::{Color32, text::LayoutJob};
 use kuroya_core::{
     LanguageId, MAX_PLUGIN_SYNTAX_BYTES, PluginDescriptor, PluginDiscoveryError,
     PluginSyntaxRegistration, PluginSyntaxRegistry, TextBuffer,
@@ -114,6 +114,7 @@ impl SyntaxHighlighter {
         tab_width: usize,
         rows: Range<usize>,
         syntax_highlighting: bool,
+        text_color: Color32,
         stop_rendering_line_after: i64,
     ) -> Vec<LayoutJob> {
         let rows = visible_rows(buffer, rows);
@@ -125,11 +126,25 @@ impl SyntaxHighlighter {
 
         if !syntax_highlighting {
             self.clear_caches_for_buffer(buffer.id());
-            return plain_visible(buffer, font_size, tab_width, rows, line_char_limit);
+            return plain_visible(
+                buffer,
+                font_size,
+                tab_width,
+                rows,
+                text_color,
+                line_char_limit,
+            );
         }
 
         if rows.end.saturating_sub(rows.start) > MAX_VISIBLE_LAYOUT_ROWS_PER_RANGE {
-            return plain_visible(buffer, font_size, tab_width, rows, line_char_limit);
+            return plain_visible(
+                buffer,
+                font_size,
+                tab_width,
+                rows,
+                text_color,
+                line_char_limit,
+            );
         }
 
         let (font_size, tab_width) = normalize_layout_inputs(font_size, tab_width);
@@ -142,15 +157,32 @@ impl SyntaxHighlighter {
             line_char_limit,
         );
 
-        self.prepare_highlight_cache_key(&key);
-
         let end = rows.end.min(buffer.len_lines());
         let start = rows.start.min(end);
-        if let Some(cache) = self.caches.get_mut(&key) {
-            if let Some(jobs) = cache.visible_layout_jobs(start..end) {
-                return jobs;
-            }
+        let cached_jobs = self
+            .caches
+            .get_mut(&key)
+            .and_then(|cache| cache.visible_layout_jobs(start..end));
+        if let Some(jobs) = cached_jobs {
+            self.prepare_highlight_cache_key(&key);
+            return jobs;
         }
+
+        let is_plain_text_syntax =
+            syntax_for_extension(&self.syntaxes, syntax_extension.as_ref()).name == "Plain Text";
+        if is_plain_text_syntax {
+            self.clear_caches_for_buffer(buffer.id());
+            return plain_visible(
+                buffer,
+                font_size,
+                tab_width,
+                rows,
+                text_color,
+                line_char_limit,
+            );
+        }
+
+        self.prepare_highlight_cache_key(&key);
 
         let syntax = syntax_for_extension(&self.syntaxes, syntax_extension.as_ref());
         let highlighter = Highlighter::new(&self.theme);
@@ -172,7 +204,14 @@ impl SyntaxHighlighter {
                 &highlighter,
                 &self.syntaxes,
             );
-            return plain_visible(buffer, font_size, tab_width, start..end, line_char_limit);
+            return plain_visible(
+                buffer,
+                font_size,
+                tab_width,
+                start..end,
+                text_color,
+                line_char_limit,
+            );
         }
 
         let mut parse_state = checkpoint.parse_state;
@@ -203,6 +242,7 @@ impl SyntaxHighlighter {
                         font_size,
                         tab_width,
                         start..end,
+                        text_color,
                         line_char_limit,
                     );
                 }
@@ -388,6 +428,7 @@ pub(crate) fn plain_visible(
     font_size: f32,
     tab_width: usize,
     rows: Range<usize>,
+    text_color: Color32,
     line_char_limit: Option<usize>,
 ) -> Vec<LayoutJob> {
     let (font_size, tab_width) = normalize_layout_inputs(font_size, tab_width);
@@ -397,7 +438,7 @@ pub(crate) fn plain_visible(
     let mut jobs = Vec::with_capacity(end.saturating_sub(start));
     for line_idx in start..end {
         let text = visible_line_text(buffer, line_idx, line_char_limit);
-        jobs.push(plain_job(&text, font_size, tab_width));
+        jobs.push(plain_job(&text, font_size, tab_width, text_color));
     }
     jobs
 }
@@ -426,15 +467,23 @@ mod hardening_tests {
 
     #[test]
     fn visible_highlighting_prunes_same_id_version_text_shape_changes() {
-        let first = TextBuffer::from_text(1, None, "let value = 1;\n".to_owned());
-        let second = TextBuffer::from_text(1, None, "let value = 1;\nlet next = 2;\n".to_owned());
+        let first = TextBuffer::from_text(
+            1,
+            Some(PathBuf::from("src/main.rs")),
+            "let value = 1;\n".to_owned(),
+        );
+        let second = TextBuffer::from_text(
+            1,
+            Some(PathBuf::from("src/main.rs")),
+            "let value = 1;\nlet next = 2;\n".to_owned(),
+        );
         let mut highlighter = SyntaxHighlighter::new();
 
-        highlighter.layout_visible(&first, 13.0, 4, 0..1, true, -1);
+        highlighter.layout_visible(&first, 13.0, 4, 0..1, true, egui::Color32::WHITE, -1);
         let first_key = HighlightCacheKey::for_buffer(&first, 13.0, 4);
         assert!(highlighter.caches.contains_key(&first_key));
 
-        highlighter.layout_visible(&second, 13.0, 4, 0..2, true, -1);
+        highlighter.layout_visible(&second, 13.0, 4, 0..2, true, egui::Color32::WHITE, -1);
         let second_key = HighlightCacheKey::for_buffer(&second, 13.0, 4);
 
         assert_ne!(first_key, second_key);
@@ -452,10 +501,32 @@ mod hardening_tests {
         let buffer = TextBuffer::from_text(1, Some(PathBuf::from("src/main.rs")), text);
         let mut highlighter = SyntaxHighlighter::new();
 
-        let jobs = highlighter.layout_visible(&buffer, 13.0, 4, 0..row_count, true, -1);
+        let jobs = highlighter.layout_visible(
+            &buffer,
+            13.0,
+            4,
+            0..row_count,
+            true,
+            egui::Color32::WHITE,
+            -1,
+        );
 
         assert_eq!(jobs.len(), row_count);
         assert_eq!(jobs[0].text, "let value_0 = 0;");
+        assert!(highlighter.caches.is_empty());
+        assert!(highlighter.cache_order.is_empty());
+    }
+
+    #[test]
+    fn plain_text_highlighting_uses_requested_theme_text_color() {
+        let text_color = egui::Color32::from_rgb(22, 44, 66);
+        let buffer = TextBuffer::from_text(1, None, "plain text".to_owned());
+        let mut highlighter = SyntaxHighlighter::new();
+
+        let jobs = highlighter.layout_visible(&buffer, 13.0, 4, 0..1, true, text_color, -1);
+
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].sections[0].format.color, text_color);
         assert!(highlighter.caches.is_empty());
         assert!(highlighter.cache_order.is_empty());
     }

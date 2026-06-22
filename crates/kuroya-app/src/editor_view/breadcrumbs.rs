@@ -3,7 +3,7 @@ use crate::{
     path_display::{compact_path, sanitized_display_label_cow},
     ui_icons::{IconKind, icon_label},
 };
-use eframe::egui::{self, Color32, Label, RichText, Sense};
+use eframe::egui::{self, Label, RichText, Sense};
 use kuroya_core::{BufferId, Command, LspDocumentSymbol};
 use std::{
     borrow::Cow,
@@ -57,19 +57,22 @@ impl KuroyaApp {
         };
 
         let last_index = items.len().saturating_sub(1);
+        let separator_color = ui.visuals().weak_text_color();
+        let active_text_color = ui.visuals().text_color();
+        let inactive_text_color = ui.visuals().weak_text_color();
         for (index, item) in items.into_iter().enumerate() {
             if index > 0 {
                 icon_label(
                     ui,
                     IconKind::ChevronRight,
-                    Color32::from_rgb(96, 105, 118),
+                    separator_color,
                     "Path separator",
                 );
             }
             let text_color = if index == last_index {
-                Color32::from_rgb(214, 219, 227)
+                active_text_color
             } else {
-                Color32::from_rgb(136, 146, 160)
+                inactive_text_color
             };
             let BreadcrumbItem {
                 label,
@@ -99,17 +102,13 @@ impl KuroyaApp {
             icon_label(
                 ui,
                 IconKind::ChevronRight,
-                Color32::from_rgb(96, 105, 118),
+                separator_color,
                 "Symbol separator",
             );
             let response = ui
                 .add(
-                    Label::new(
-                        RichText::new(label)
-                            .small()
-                            .color(Color32::from_rgb(214, 219, 227)),
-                    )
-                    .sense(Sense::click()),
+                    Label::new(RichText::new(label).small().color(active_text_color))
+                        .sense(Sense::click()),
                 )
                 .on_hover_text(hover_text);
             if response.clicked() {

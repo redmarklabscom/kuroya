@@ -1,9 +1,6 @@
 use crate::{
     editor_pane_rows::EditorRowContext,
-    editor_pane_support::{
-        DiagnosticTagKind, paint_char_range_highlight,
-        paint_char_range_highlight_with_corner_radius,
-    },
+    editor_pane_support::{DiagnosticTagKind, paint_char_range_highlight},
     editor_text_geometry::visual_column_for_char_offset,
     theme::{document_highlight_color, semantic_token_color},
 };
@@ -14,6 +11,7 @@ pub(super) fn paint_row_highlights(
     painter: &egui::Painter,
     rect: egui::Rect,
     snapshot_range: &Range<usize>,
+    line_end_visible: bool,
     line_text: &str,
     row: &EditorRowContext<'_>,
 ) {
@@ -85,26 +83,6 @@ pub(super) fn paint_row_highlights(
         },
     );
 
-    let (_, occurrence_highlight_ranges) = sorted_non_overlapping_range_spans_for_snapshot(
-        row.occurrence_highlight_ranges,
-        snapshot_range,
-        |range| range,
-    );
-    for range in occurrence_highlight_ranges {
-        paint_char_range_highlight(
-            painter,
-            rect,
-            row.gutter_width,
-            row.char_width,
-            row.row_height,
-            snapshot_range,
-            line_text,
-            row.tab_width,
-            range,
-            Color32::from_rgb(39, 50, 68),
-        );
-    }
-
     for (range, kind) in sorted_range_spans_before_snapshot_end(
         row.document_highlight_ranges,
         snapshot_range,
@@ -127,42 +105,23 @@ pub(super) fn paint_row_highlights(
         );
     }
 
-    let (_, selection_highlight_ranges) = sorted_non_overlapping_range_spans_for_snapshot(
-        row.selection_highlight_ranges,
-        snapshot_range,
-        |range| range,
-    );
-    for range in selection_highlight_ranges {
-        paint_char_range_highlight(
-            painter,
-            rect,
-            row.gutter_width,
-            row.char_width,
-            row.row_height,
-            snapshot_range,
-            line_text,
-            row.tab_width,
-            range,
-            Color32::from_rgb(45, 58, 89),
-        );
-    }
-
-    let selection_corner_radius = selection_highlight_corner_radius(row.rounded_selection);
+    let selection_corner_radius = selection_corner_radius(row.rounded_selection);
     for selection in row.selections {
         let Some(range) = selection_range_for_snapshot(*selection, snapshot_range) else {
             continue;
         };
-        paint_char_range_highlight_with_corner_radius(
+        paint_selection_range_highlight(
             painter,
             rect,
             row.gutter_width,
             row.char_width,
             row.row_height,
             snapshot_range,
+            line_end_visible,
             line_text,
             row.tab_width,
             &range,
-            Color32::from_rgb(42, 73, 126),
+            row.selection_bg_fill,
             selection_corner_radius,
         );
     }
@@ -176,9 +135,9 @@ pub(super) fn paint_row_highlights(
     for (visible_offset, range) in visible_find_matches.iter().enumerate() {
         let match_idx = visible_find_match_start + visible_offset;
         let color = if match_idx == row.active_find_match {
-            Color32::from_rgb(120, 93, 37)
+            translucent_highlight(row.warn_fg_color, 96)
         } else {
-            Color32::from_rgb(74, 63, 40)
+            translucent_highlight(row.warn_fg_color, 54)
         };
         paint_char_range_highlight(
             painter,
@@ -224,12 +183,85 @@ fn selection_range_for_snapshot(
     selection: kuroya_core::Selection,
     snapshot_range: &Range<usize>,
 ) -> Option<Range<usize>> {
+    if selection.is_caret() {
+        return None;
+    }
     let range = selection.range();
     range_overlaps_snapshot(&range, snapshot_range).then_some(range)
 }
 
-fn selection_highlight_corner_radius(rounded_selection: bool) -> f32 {
+fn selection_corner_radius(rounded_selection: bool) -> f32 {
     if rounded_selection { 2.0 } else { 0.0 }
+}
+
+fn paint_selection_range_highlight(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    gutter_width: f32,
+    char_width: f32,
+    row_height: f32,
+    snapshot_range: &Range<usize>,
+    line_end_visible: bool,
+    line_text: &str,
+    tab_width: usize,
+    range: &Range<usize>,
+    color: Color32,
+    corner_radius: f32,
+) {
+    let Some((col_start, col_end)) = selection_visual_columns_for_snapshot(
+        range,
+        snapshot_range,
+        line_end_visible,
+        line_text,
+        tab_width,
+    ) else {
+        return;
+    };
+    painter.rect_filled(
+        egui::Rect::from_min_size(
+            pos2(
+                rect.left() + gutter_width + col_start as f32 * char_width,
+                rect.top() + 2.0,
+            ),
+            egui::vec2((col_end - col_start) as f32 * char_width, row_height - 4.0),
+        ),
+        corner_radius,
+        color,
+    );
+}
+
+fn selection_visual_columns_for_snapshot(
+    range: &Range<usize>,
+    snapshot_range: &Range<usize>,
+    line_end_visible: bool,
+    line_text: &str,
+    tab_width: usize,
+) -> Option<(usize, usize)> {
+    let start = range.start.max(snapshot_range.start);
+    let end = range.end.min(snapshot_range.end);
+    if start >= end {
+        return None;
+    }
+
+    let text_char_count = line_text.chars().count();
+    let char_start = start
+        .saturating_sub(snapshot_range.start)
+        .min(text_char_count);
+    let char_end = end
+        .saturating_sub(snapshot_range.start)
+        .min(text_char_count);
+    let col_start = visual_column_for_char_offset(line_text, char_start, tab_width);
+    let mut col_end = visual_column_for_char_offset(line_text, char_end, tab_width);
+    let selection_reaches_line_ending = line_end_visible
+        && end > snapshot_range.start.saturating_add(text_char_count)
+        && char_end == text_char_count;
+    if selection_reaches_line_ending {
+        col_end = col_end.saturating_add(1);
+    } else if col_end <= col_start {
+        col_end = col_start.saturating_add(1);
+    }
+
+    (col_end > col_start).then_some((col_start, col_end))
 }
 
 pub(super) fn paint_row_deprecated_diagnostic_tags(
@@ -252,6 +284,7 @@ pub(super) fn paint_row_deprecated_diagnostic_tags(
             line_text,
             row.tab_width,
             range,
+            row.weak_text_color,
         );
     }
 }
@@ -278,6 +311,7 @@ fn paint_diagnostic_tag_strikethrough(
     line_text: &str,
     tab_width: usize,
     range: &Range<usize>,
+    color: Color32,
 ) {
     let start = range.start.max(snapshot_range.start);
     let end = range.end.min(snapshot_range.end);
@@ -305,10 +339,11 @@ fn paint_diagnostic_tag_strikethrough(
     }
 
     let y = rect.top() + row_height * 0.56;
-    painter.line_segment(
-        [pos2(left, y), pos2(right, y)],
-        Stroke::new(1.0, Color32::from_rgb(126, 136, 150)),
-    );
+    painter.line_segment([pos2(left, y), pos2(right, y)], Stroke::new(1.0, color));
+}
+
+fn translucent_highlight(color: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -610,9 +645,9 @@ fn is_thai_character(ch: char) -> bool {
 mod tests {
     use super::{
         UnicodeHighlightKind, deprecated_diagnostic_tag_ranges_for_snapshot,
-        range_overlaps_snapshot, selection_highlight_corner_radius, selection_range_for_snapshot,
-        sorted_non_overlapping_range_spans_for_snapshot, sorted_range_spans_before_snapshot_end,
-        unicode_highlight_kind, unicode_highlight_ranges,
+        range_overlaps_snapshot, selection_corner_radius, selection_range_for_snapshot,
+        selection_visual_columns_for_snapshot, sorted_non_overlapping_range_spans_for_snapshot,
+        sorted_range_spans_before_snapshot_end, unicode_highlight_kind, unicode_highlight_ranges,
     };
     use crate::editor_pane_support::DiagnosticTagKind;
     use kuroya_core::Selection;
@@ -767,13 +802,43 @@ mod tests {
     }
 
     #[test]
-    fn selection_highlight_corner_radius_follows_setting() {
-        assert_eq!(selection_highlight_corner_radius(true), 2.0);
-        assert_eq!(selection_highlight_corner_radius(false), 0.0);
+    fn selection_corner_radius_follows_setting() {
+        assert_eq!(selection_corner_radius(true), 2.0);
+        assert_eq!(selection_corner_radius(false), 0.0);
+    }
+
+    #[test]
+    fn selection_visual_columns_include_visible_line_ending_cell() {
+        assert_eq!(
+            selection_visual_columns_for_snapshot(&(2..5), &(0..6), true, "abcd", 4),
+            Some((2, 5))
+        );
+        assert_eq!(
+            selection_visual_columns_for_snapshot(&(2..5), &(0..6), false, "abcd", 4),
+            Some((2, 4))
+        );
+        assert_eq!(
+            selection_visual_columns_for_snapshot(&(4..5), &(0..5), true, "abcd", 4),
+            Some((4, 5))
+        );
+        assert_eq!(
+            selection_visual_columns_for_snapshot(&(0..1), &(0..1), true, "", 4),
+            Some((0, 1))
+        );
     }
 
     #[test]
     fn selection_range_for_snapshot_skips_off_row_selections() {
+        assert_eq!(
+            selection_range_for_snapshot(
+                Selection {
+                    anchor: 7,
+                    cursor: 7
+                },
+                &(5..10)
+            ),
+            None
+        );
         assert_eq!(
             selection_range_for_snapshot(
                 Selection {

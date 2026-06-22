@@ -1,5 +1,5 @@
 use super::super::{commands::LspClientCommand, handle::LspClientHandle};
-use kuroya_core::{BufferId, LanguageId, TextSnapshot};
+use kuroya_core::{BufferId, TextSnapshot};
 use std::path::PathBuf;
 
 impl LspClientHandle {
@@ -7,7 +7,7 @@ impl LspClientHandle {
         &self,
         id: BufferId,
         path: PathBuf,
-        language: LanguageId,
+        language: String,
         version: u64,
         text: TextSnapshot,
     ) -> bool {
@@ -53,7 +53,7 @@ mod tests {
         assert!(handle.did_open(
             buffer.id(),
             PathBuf::from("src/main.rs"),
-            LanguageId::Rust,
+            "rust".to_owned(),
             buffer.version(),
             snapshot,
         ));

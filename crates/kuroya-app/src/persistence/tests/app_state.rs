@@ -101,11 +101,38 @@ fn app_state_round_trips_recent_projects_atomically() {
             PathBuf::new(),
         ],
         vim_keybindings: Some(true),
+        vim: Some(kuroya_core::EditorVimSettings {
+            disabled_bindings: vec!["Q".to_owned(), "<Nope>".to_owned()],
+            key_overrides: vec![
+                kuroya_core::EditorVimKeyOverride {
+                    before: "<Home>".to_owned(),
+                    after: "0".to_owned(),
+                    command: None,
+                },
+                kuroya_core::EditorVimKeyOverride {
+                    before: "L".to_owned(),
+                    after: "<Left>".to_owned(),
+                    command: None,
+                },
+            ],
+        }),
     };
+    let first_sanitized_vim = Some(kuroya_core::EditorVimSettings {
+        disabled_bindings: vec!["Q".to_owned()],
+        key_overrides: vec![kuroya_core::EditorVimKeyOverride {
+            before: "<Home>".to_owned(),
+            after: "0".to_owned(),
+            command: None,
+        }],
+    });
     let second = AppState {
         recent_projects: vec![PathBuf::from("workspace-c")],
         trusted_workspaces: vec![PathBuf::from("workspace-c")],
         vim_keybindings: Some(false),
+        vim: Some(kuroya_core::EditorVimSettings {
+            disabled_bindings: vec!["<C-n>".to_owned()],
+            key_overrides: Vec::new(),
+        }),
     };
 
     save_app_state_to_path(&path, &first).unwrap();
@@ -120,6 +147,10 @@ fn app_state_round_trips_recent_projects_atomically() {
     assert_eq!(
         load_app_state_from_path(&path).unwrap().vim_keybindings,
         Some(true)
+    );
+    assert_eq!(
+        load_app_state_from_path(&path).unwrap().vim,
+        first_sanitized_vim
     );
 
     save_app_state_to_path(&path, &second).unwrap();
@@ -148,6 +179,7 @@ fn app_state_loads_old_files_without_vim_keybindings() {
     assert_eq!(loaded.recent_projects, vec![PathBuf::from("workspace-a")]);
     assert_eq!(loaded.trusted_workspaces, Vec::<PathBuf>::new());
     assert_eq!(loaded.vim_keybindings, None);
+    assert_eq!(loaded.vim, None);
 
     fs::remove_dir_all(workspace).unwrap();
 }

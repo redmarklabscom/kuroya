@@ -8,7 +8,8 @@ use crate::{
     lsp_lifecycle::{
         BackgroundLanguageBlockReason, background_language_block_reason,
         buffer_allows_background_language, due_language_sync_ids, lsp_lifecycle_target_for_buffer,
-        lsp_lifecycle_targets_for_buffers, open_lsp_workspace_edit_block_reason,
+        lsp_lifecycle_targets_for_buffers, lsp_server_config_for_buffer,
+        open_lsp_workspace_edit_block_reason,
     },
     lsp_runtime::{
         LSP_RESTART_BASE_DELAY, LspRestartDecision, clear_pending_lsp_restart_for_started_client,
@@ -18,11 +19,11 @@ use crate::{
     },
     terminal::TerminalPane,
 };
-use kuroya_core::{EditorSettings, TextBuffer, Workspace};
+use kuroya_core::{EditorSettings, LspServerConfig, PluginLanguageRegistry, TextBuffer, Workspace};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::runtime::Runtime;
 
@@ -34,14 +35,91 @@ fn lsp_lifecycle_target_uses_existing_server_key_for_safe_buffers() {
         "fn main() {}".to_owned(),
     );
 
-    let target =
-        lsp_lifecycle_target_for_buffer(&buffer, &HashSet::new(), &HashSet::new()).unwrap();
+    let configs = lsp_configs();
+    let target = lsp_lifecycle_target_for_buffer(
+        &buffer,
+        &configs,
+        &PluginLanguageRegistry::default(),
+        &HashSet::new(),
+        &HashSet::new(),
+    )
+    .unwrap();
     assert_eq!(target.0, "rust");
     assert!(
         target
             .1
             .ends_with(Path::new("workspace").join("src").join("lib.rs"))
     );
+}
+
+#[test]
+fn lsp_lifecycle_target_uses_custom_extension_server_for_plain_text_buffers() {
+    let buffer = TextBuffer::from_text(
+        17,
+        Some(PathBuf::from("workspace/src/main.gleam")),
+        "pub fn main() { Nil }".to_owned(),
+    );
+    let mut configs = lsp_configs();
+    configs.push(LspServerConfig {
+        language: "gleam".to_owned(),
+        command: "gleam".to_owned(),
+        args: vec!["lsp".to_owned()],
+        extensions: vec!["gleam".to_owned()],
+        root_markers: vec!["gleam.toml".to_owned()],
+    });
+
+    let target = lsp_lifecycle_target_for_buffer(
+        &buffer,
+        &configs,
+        &PluginLanguageRegistry::default(),
+        &HashSet::new(),
+        &HashSet::new(),
+    )
+    .unwrap();
+
+    assert_eq!(target.0, "gleam");
+    assert!(target.1.ends_with(Path::new("workspace/src/main.gleam")));
+}
+
+#[test]
+fn lsp_lifecycle_uses_precise_builtin_language_id_for_react_buffers() {
+    let buffer = TextBuffer::from_text(
+        18,
+        Some(PathBuf::from("workspace/src/App.tsx")),
+        "export function App() { return <main />; }".to_owned(),
+    );
+    let configs = lsp_configs();
+    let plugin_languages = PluginLanguageRegistry::default();
+
+    let (config, language) = lsp_server_config_for_buffer(&configs, &plugin_languages, &buffer)
+        .expect("tsx should use the TypeScript server");
+
+    assert_eq!(config.language, "typescript");
+    assert_eq!(language.as_ref(), "typescriptreact");
+}
+
+#[test]
+fn lsp_lifecycle_custom_extension_server_can_override_builtin_extension() {
+    let buffer = TextBuffer::from_text(
+        19,
+        Some(PathBuf::from("workspace/src/App.tsx")),
+        "export function App() { return <main />; }".to_owned(),
+    );
+    let mut configs = lsp_configs();
+    configs.push(LspServerConfig {
+        language: "custom-tsx".to_owned(),
+        command: "custom-tsx-lsp".to_owned(),
+        args: Vec::new(),
+        extensions: vec!["tsx".to_owned()],
+        root_markers: Vec::new(),
+    });
+    let plugin_languages = PluginLanguageRegistry::default();
+
+    let (config, language) = lsp_server_config_for_buffer(&configs, &plugin_languages, &buffer)
+        .expect("custom tsx server should be selected");
+
+    assert_eq!(config.language, "custom-tsx");
+    assert_eq!(language.as_ref(), "custom-tsx");
 }
 
 #[test]
@@ -56,17 +134,36 @@ fn lsp_lifecycle_target_skips_protected_or_unsupported_buffers() {
         Some(PathBuf::from("workspace/notes.txt")),
         "notes".to_owned(),
     );
+    let configs = lsp_configs();
 
     assert_eq!(
-        lsp_lifecycle_target_for_buffer(&rust, &HashSet::from([8]), &HashSet::new()),
+        lsp_lifecycle_target_for_buffer(
+            &rust,
+            &configs,
+            &PluginLanguageRegistry::default(),
+            &HashSet::from([8]),
+            &HashSet::new(),
+        ),
         None
     );
     assert_eq!(
-        lsp_lifecycle_target_for_buffer(&rust, &HashSet::new(), &HashSet::from([8])),
+        lsp_lifecycle_target_for_buffer(
+            &rust,
+            &configs,
+            &PluginLanguageRegistry::default(),
+            &HashSet::new(),
+            &HashSet::from([8]),
+        ),
         None
     );
     assert_eq!(
-        lsp_lifecycle_target_for_buffer(&text, &HashSet::new(), &HashSet::new()),
+        lsp_lifecycle_target_for_buffer(
+            &text,
+            &configs,
+            &PluginLanguageRegistry::default(),
+            &HashSet::new(),
+            &HashSet::new(),
+        ),
         None
     );
 }
@@ -115,11 +212,23 @@ fn background_language_block_reason_covers_protected_buffers() {
         Some(BackgroundLanguageBlockReason::LargeBuffer)
     );
     assert_eq!(
-        lsp_lifecycle_target_for_buffer(&large, &HashSet::new(), &HashSet::new()),
+        lsp_lifecycle_target_for_buffer(
+            &large,
+            &lsp_configs(),
+            &PluginLanguageRegistry::default(),
+            &HashSet::new(),
+            &HashSet::new(),
+        ),
         None
     );
     assert_eq!(
-        lsp_lifecycle_target_for_buffer(&performance, &HashSet::new(), &HashSet::new()),
+        lsp_lifecycle_target_for_buffer(
+            &performance,
+            &lsp_configs(),
+            &PluginLanguageRegistry::default(),
+            &HashSet::new(),
+            &HashSet::new()
+        ),
         None
     );
 }
@@ -142,8 +251,14 @@ fn lsp_lifecycle_targets_collect_safe_open_buffers_for_teardown() {
         "notes".to_owned(),
     );
 
-    let targets =
-        lsp_lifecycle_targets_for_buffers(&[rust, python, notes], &HashSet::new(), &HashSet::new());
+    let configs = lsp_configs();
+    let targets = lsp_lifecycle_targets_for_buffers(
+        &[rust, python, notes],
+        &configs,
+        &PluginLanguageRegistry::default(),
+        &HashSet::new(),
+        &HashSet::new(),
+    );
 
     assert_eq!(targets.len(), 2);
     assert_eq!(targets[0].0, "rust");
@@ -154,23 +269,27 @@ fn lsp_lifecycle_targets_collect_safe_open_buffers_for_teardown() {
 
 #[test]
 fn lsp_restart_buffer_ids_collect_safe_buffers_for_language() {
+    let root = unique_test_root("lsp-restart-buffer-ids");
+    std::fs::create_dir_all(root.join("src")).expect("create rust test workspace");
+    std::fs::write(root.join("Cargo.toml"), b"[package]\nname = \"fixture\"\n")
+        .expect("write rust root marker");
+    std::fs::write(root.join("src/main.rs"), b"fn main() {}").expect("write rust source fixture");
     let rust = TextBuffer::from_text(
         10,
-        Some(PathBuf::from("src/main.rs")),
+        Some(root.join("src/main.rs")),
         "fn main() {}".to_owned(),
     );
-    let python = TextBuffer::from_text(
-        11,
-        Some(PathBuf::from("app.py")),
-        "print('hello')".to_owned(),
-    );
-    let notes = TextBuffer::from_text(12, Some(PathBuf::from("notes.txt")), "notes".to_owned());
+    let python = TextBuffer::from_text(11, Some(root.join("app.py")), "print('hello')".to_owned());
+    let notes = TextBuffer::from_text(12, Some(root.join("notes.txt")), "notes".to_owned());
 
     let buffers = vec![rust, python, notes];
+    let configs = lsp_configs();
     let ids = lsp_restart_buffer_ids(
         "rust",
         &buffers,
-        Path::new("."),
+        &configs,
+        &PluginLanguageRegistry::default(),
+        &root,
         &HashSet::new(),
         &HashSet::new(),
     );
@@ -186,11 +305,14 @@ fn lsp_restart_buffer_ids_skip_protected_buffers() {
         "fn main() {}".to_owned(),
     );
     let buffers = vec![rust];
+    let configs = lsp_configs();
 
     assert!(
         lsp_restart_buffer_ids(
             "rust",
             &buffers,
+            &configs,
+            &PluginLanguageRegistry::default(),
             Path::new("."),
             &HashSet::from([13]),
             &HashSet::new(),
@@ -201,6 +323,8 @@ fn lsp_restart_buffer_ids_skip_protected_buffers() {
         lsp_restart_buffer_ids(
             "rust",
             &buffers,
+            &configs,
+            &PluginLanguageRegistry::default(),
             Path::new("."),
             &HashSet::new(),
             &HashSet::from([13]),
@@ -486,4 +610,16 @@ fn app_for_test(root: PathBuf) -> KuroyaApp {
         now: Instant::now(),
         startup_timings: Vec::new(),
     })
+}
+
+fn unique_test_root(name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!("kuroya-{name}-{}-{nanos}", std::process::id()))
+}
+
+fn lsp_configs() -> Vec<kuroya_core::LspServerConfig> {
+    EditorSettings::default().lsp_server_configs()
 }

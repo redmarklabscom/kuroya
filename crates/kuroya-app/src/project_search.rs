@@ -12,7 +12,7 @@ use crate::{
     ui_events::UiEvent,
     ui_state::{clamp_selection, move_selection},
 };
-use kuroya_core::{SearchOptions, SearchResult, search::search_project_index_with_cancel};
+use kuroya_core::{SearchOptions, SearchResult, search::search_project_with_cancel_and_progress};
 use std::{
     fmt::Write as _,
     path::{Path, PathBuf},
@@ -30,8 +30,21 @@ impl KuroyaApp {
             return;
         };
 
+        if self.project_index_generation == 0 && self.index.files().is_empty() {
+            self.ensure_workspace_index_started();
+            if self.workspace_index_in_flight_request_id.is_some() {
+                self.invalidate_project_search_requests();
+                self.project_search_result = SearchResult::default();
+                self.project_search_result_query.clear();
+                self.project_search_result_index_generation = self.project_search_index_generation;
+                self.project_search_selected = 0;
+                self.status = "Indexing workspace before search".to_owned();
+                return;
+            }
+        }
+
         let request_id = self.reserve_project_search_request_id();
-        let index = self.project_search_index.clone();
+        let index = self.index.clone();
         let index_generation = self.project_search_index_generation;
         let workspace_root = self.workspace.root.clone();
         let tx = self.tx.clone();
@@ -50,6 +63,14 @@ impl KuroyaApp {
             MAX_PROJECT_SEARCH_RECENT_QUERIES,
         );
         self.status = project_search_start_status(&query);
+        self.project_search_result = SearchResult::default();
+        self.project_search_result_query = query.clone();
+        self.project_search_result_index_generation = index_generation;
+        self.project_search_result_case_sensitive = case_sensitive;
+        self.project_search_result_whole_word = whole_word;
+        self.project_search_result_include_globs = include_globs.clone();
+        self.project_search_result_exclude_globs = exclude_globs.clone();
+        self.project_search_selected = 0;
         self.record_async_task_started("Project Search", project_search_start_detail(&query));
         self.runtime.spawn_blocking(move || {
             let options = SearchOptions {
@@ -60,9 +81,27 @@ impl KuroyaApp {
                 exclude_globs,
                 ..SearchOptions::default()
             };
-            let result = search_project_index_with_cancel(&index, &options, || {
-                project_search_request_is_cancelled(&cancel_generation, request_id)
-            })
+            let result = search_project_with_cancel_and_progress(
+                &index,
+                &options,
+                || project_search_request_is_cancelled(&cancel_generation, request_id),
+                |progress| {
+                    let _ = crate::ui_event_channel::send_ui_event(
+                        &tx,
+                        UiEvent::SearchProgress {
+                            request_id,
+                            index_generation,
+                            workspace_root: workspace_root.clone(),
+                            query: options.query.clone(),
+                            case_sensitive,
+                            whole_word,
+                            include_globs: options.include_globs.clone(),
+                            exclude_globs: options.exclude_globs.clone(),
+                            progress,
+                        },
+                    );
+                },
+            )
             .unwrap_or_default();
             let SearchOptions {
                 query,
@@ -85,6 +124,14 @@ impl KuroyaApp {
                 },
             );
         });
+    }
+
+    pub(crate) fn project_search_waiting_for_index(&self) -> bool {
+        self.project_search
+            && self.project_index_generation > 0
+            && self.workspace_index_in_flight_request_id.is_none()
+            && self.project_search_result_query.is_empty()
+            && normalize_project_search_request_query(&self.project_search_query).is_some()
     }
 
     fn reserve_project_search_request_id(&mut self) -> u64 {
@@ -235,13 +282,34 @@ mod tests {
         ui_event_channel::ui_event_channel,
         ui_events::UiEvent,
     };
-    use kuroya_core::{EditorSettings, SearchMatch, SearchResult, TextBuffer, Workspace};
+    use kuroya_core::{
+        EditorSettings, ProjectIndex, SearchMatch, SearchResult, TextBuffer, Workspace,
+    };
     use std::{
+        fs,
         path::PathBuf,
         sync::atomic::Ordering,
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
     use tokio::runtime::Runtime;
+
+    fn recv_project_search_finished(app: &KuroyaApp) -> UiEvent {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let now = Instant::now();
+            assert!(
+                now < deadline,
+                "timed out waiting for project search completion"
+            );
+            let event = app
+                .rx
+                .recv_timeout(deadline.saturating_duration_since(now))
+                .expect("project search event");
+            if matches!(event, UiEvent::SearchFinished { .. }) {
+                return event;
+            }
+        }
+    }
 
     #[test]
     fn project_search_start_status_sanitizes_and_bounds_query_label() {
@@ -323,6 +391,8 @@ mod tests {
     fn spawn_project_search_sanitizes_visible_labels_and_preserves_raw_request_query() {
         let root = PathBuf::from("workspace");
         let mut app = app_for_project_search_test(root);
+        app.project_index_generation = 1;
+        app.project_search_index_generation = 1;
         let raw_query = format!(
             "  alpha\n  beta\u{202e} {}  ",
             "query-fragment-".repeat(MAX_PROJECT_SEARCH_QUERY_CHARS)
@@ -351,10 +421,7 @@ mod tests {
         assert!(active_detail.contains("..."));
         assert!(active_detail.chars().count() <= MAX_ASYNC_TASK_DETAIL_CHARS);
 
-        let event = app
-            .rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("project search completion event");
+        let event = recv_project_search_finished(&app);
         let label = async_task_event_label(&event).expect("search event label");
         assert_eq!(label.detail, active_detail);
         match event {
@@ -366,6 +433,84 @@ mod tests {
             }
             _ => panic!("expected project search completion event"),
         }
+    }
+
+    #[test]
+    fn spawn_project_search_uses_metadata_project_index() {
+        let root = temp_project_search_root("metadata-project-index-search");
+        fs::create_dir_all(root.join("src")).unwrap();
+        let path = root.join("src/main.rs");
+        fs::write(&path, "fn main() {\n    let needle = 1;\n}\n").unwrap();
+        let mut app = app_for_project_search_test(root.clone());
+        app.index = ProjectIndex::rebuild(&root, 40_000);
+        app.project_search_index_generation = 3;
+        app.project_search_query = "needle".to_owned();
+
+        app.spawn_project_search();
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut saw_progress = false;
+        loop {
+            let now = Instant::now();
+            assert!(
+                now < deadline,
+                "timed out waiting for project search completion"
+            );
+            let event = app
+                .rx
+                .recv_timeout(deadline.saturating_duration_since(now))
+                .expect("project search event");
+            match event {
+                UiEvent::SearchProgress {
+                    index_generation,
+                    query,
+                    progress,
+                    ..
+                } => {
+                    assert_eq!(index_generation, 3);
+                    assert_eq!(query, "needle");
+                    assert_eq!(progress.matches.len(), 1);
+                    assert_eq!(progress.matches[0].path, path);
+                    saw_progress = true;
+                }
+                UiEvent::SearchFinished {
+                    index_generation,
+                    query,
+                    result,
+                    ..
+                } => {
+                    assert!(saw_progress);
+                    assert_eq!(index_generation, 3);
+                    assert_eq!(query, "needle");
+                    assert_eq!(result.matches.len(), 1);
+                    assert_eq!(result.matches[0].path, path);
+                    assert_eq!(result.matches[0].line, 2);
+                    break;
+                }
+                _ => panic!("expected project search event"),
+            }
+        }
+        assert!(app.rx.try_recv().is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn spawn_project_search_defers_until_workspace_index_is_available() {
+        let root = temp_project_search_root("deferred-project-index-search");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_project_search_test(root.clone());
+        app.project_search = true;
+        app.project_search_query = "needle".to_owned();
+
+        app.spawn_project_search();
+
+        assert_eq!(app.workspace_index_in_flight_request_id, Some(1));
+        assert_eq!(app.project_search_active_request_id, 1);
+        assert!(app.project_search_result.matches.is_empty());
+        assert!(app.project_search_result_query.is_empty());
+        assert_eq!(app.status, "Indexing workspace before search");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -536,5 +681,13 @@ mod tests {
             now: Instant::now(),
             startup_timings: Vec::new(),
         })
+    }
+
+    fn temp_project_search_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!("kuroya-{name}-{}-{nanos}", std::process::id()))
     }
 }

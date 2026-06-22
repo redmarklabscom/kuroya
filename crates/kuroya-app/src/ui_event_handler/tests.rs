@@ -8,8 +8,7 @@ use crate::{
 use kuroya_core::{
     Diagnostic, DiagnosticSeverity, EditorSettings, GitAutoRepositoryDetection, GitBlameLine,
     GitBranch, GitChangeStage, GitCheckoutType, GitCommitSummary, GitDiffHunk, GitSnapshot,
-    GitStashEntry, ProjectIndex, ProjectSearchIndex, TextBuffer, Workspace, WorkspaceTask,
-    WorkspaceTaskKind,
+    GitStashEntry, ProjectIndex, TextBuffer, Workspace, WorkspaceTask, WorkspaceTaskKind,
 };
 use std::{
     collections::BTreeMap,

@@ -127,6 +127,7 @@ mod tests {
     use super::*;
     use crate::{
         app_startup_context::AppStartupContext,
+        lsp_client::LspClientHandle,
         path_display::{DISPLAY_ERROR_LABEL_MAX_CHARS, DISPLAY_PATH_LABEL_MAX_CHARS},
         terminal::TerminalPane,
     };
@@ -220,6 +221,7 @@ mod tests {
                 request_id: 21,
             },
         );
+        app.lsp_unavailable.insert("rust".to_owned());
         app.status = "current status".to_owned();
 
         app.handle_lsp_formatting_result(
@@ -246,6 +248,66 @@ mod tests {
         assert!(!app.format_on_save_bypass.contains(&7));
         assert!(app.in_flight_saves.contains(&7));
         assert!(app.status.starts_with("Saving "));
+    }
+
+    #[test]
+    fn stale_formatting_result_retries_format_on_save_when_lsp_is_available() {
+        let root = PathBuf::from("workspace");
+        let path = root.join("src/main.rs");
+        let mut app = app_for_test(root);
+        let mut buffer = TextBuffer::from_text(7, Some(path.clone()), "fn main() {}\n".to_owned());
+        let stale_version = buffer.version();
+        buffer.apply_edit(TextEdit {
+            range: 0..0,
+            inserted: "// newer\n".to_owned(),
+        });
+        let current_version = buffer.version();
+        app.buffers.push(buffer);
+        app.pending_format_on_save.insert(
+            7,
+            PendingFormatOnSave {
+                save_path: path.clone(),
+                format_path: path.clone(),
+                version: stale_version,
+                request_id: 21,
+            },
+        );
+        app.lsp_clients
+            .insert("rust".to_owned(), LspClientHandle::accepting_for_test());
+
+        app.handle_lsp_formatting_result(
+            21,
+            7,
+            path.clone(),
+            stale_version,
+            Some(vec![LspTextEdit {
+                path: path.clone(),
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: 1,
+                new_text: "// stale\n".to_owned(),
+            }]),
+            None,
+        );
+
+        assert_eq!(
+            app.buffer(7).expect("buffer").text(),
+            "// newer\nfn main() {}\n"
+        );
+        assert_eq!(
+            app.pending_format_on_save.get(&7),
+            Some(&PendingFormatOnSave {
+                save_path: path.clone(),
+                format_path: path,
+                version: current_version,
+                request_id: 1,
+            })
+        );
+        assert!(app.canceled_formatting_request_ids.contains(&21));
+        assert!(!app.format_on_save_bypass.contains(&7));
+        assert!(!app.in_flight_saves.contains(&7));
+        assert!(app.status.starts_with("Formatting before save "));
     }
 
     #[test]
@@ -298,6 +360,7 @@ mod tests {
                 request_id: 21,
             },
         );
+        app.lsp_unavailable.insert("rust".to_owned());
 
         app.handle_lsp_formatting_result(
             21,

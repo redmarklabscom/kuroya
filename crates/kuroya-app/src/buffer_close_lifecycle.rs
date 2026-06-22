@@ -96,7 +96,6 @@ impl KuroyaApp {
         self.diff_cache_pending.retain(|key, _| key.buffer_id != id);
         self.buffer_find_cache.clear_for_buffer(id);
         self.editor_bracket_overlay_cache.clear_for_buffer(id);
-        self.editor_match_highlight_cache.clear_for_buffer(id);
         self.minimap_line_length_cache.clear_for_buffer(id);
         self.minimap_section_header_cache.clear_for_buffer(id);
         self.syntax_tree_cache.clear_for_buffer(id);
@@ -284,9 +283,9 @@ mod tests {
         transient_state::{EditorInertialScroll, LspHoverPopup, LspSignatureHelpPopup},
     };
     use kuroya_core::{
-        EditorMatchBrackets, EditorOccurrencesHighlight, EditorSettings, GitBlameLine,
-        GitChangeStage, GitDiffHunk, LspDocumentHighlight, LspFoldingRange, LspSignatureHelp,
-        LspTextEdit, TextBuffer, Workspace,
+        EditorMatchBrackets, EditorSettings, GitBlameLine, GitChangeStage, GitDiffHunk,
+        LspDocumentHighlight, LspFoldingRange, LspSignatureHelp, LspTextEdit, TextBuffer,
+        Workspace,
     };
     use std::{
         cell::Cell,
@@ -688,12 +687,6 @@ mod tests {
         ));
         assert!(app.line_render_protection_cache.contains_key(&7));
         assert_eq!(
-            app.editor_match_highlight_cache
-                .occurrence_highlight_ranges(&buffer, EditorOccurrencesHighlight::SingleFile),
-            vec![0..6]
-        );
-        assert!(app.editor_match_highlight_cache.contains_buffer_for_test(7));
-        assert_eq!(
             app.editor_bracket_overlay_cache
                 .bracket_colors_for_lines(&buffer, 0, 1, false),
             buffer.bracket_colors_for_lines_with_options(0, 1, false)
@@ -740,7 +733,6 @@ mod tests {
         assert_eq!(app.buffer_find_cache.cached_buffer_id_for_test(), None);
         assert!(!app.line_render_protection_cache.contains_key(&7));
         assert!(!app.editor_bracket_overlay_cache.contains_buffer_for_test(7));
-        assert!(!app.editor_match_highlight_cache.contains_buffer_for_test(7));
         assert!(!app.minimap_line_length_cache.contains_buffer_for_test(7));
         assert!(!app.minimap_section_header_cache.contains_buffer_for_test(7));
         assert!(!app.syntax_tree_cache.contains_buffer_for_test(7));

@@ -10,7 +10,7 @@ use crate::{
     ui_state::{clamp_selection, selected_row_scroll_offset},
 };
 use eframe::egui::{
-    Color32, RichText, ScrollArea, Ui,
+    RichText, ScrollArea, Ui,
     cache::{ComputerMut, FrameCache},
 };
 use kuroya_core::{EditorSuggestPreviewMode, LspCompletionItem};
@@ -340,12 +340,13 @@ fn render_completion_documentation(
     suggest_preview: bool,
     suggest_preview_mode: EditorSuggestPreviewMode,
 ) {
+    let weak_text_color = ui.visuals().weak_text_color();
     ui.vertical(|ui| {
         ui.set_width(ui.available_width().max(220.0));
         ui.label(
             RichText::new("Documentation")
                 .small()
-                .color(Color32::from_rgb(126, 136, 150)),
+                .color(weak_text_color),
         );
         ui.add_space(4.0);
 
@@ -356,11 +357,7 @@ fn render_completion_documentation(
 
         ui.label(RichText::new(completion_display_label(&item.label)).strong());
         if let Some(detail) = completion_item_detail_display(item) {
-            ui.label(
-                RichText::new(detail)
-                    .small()
-                    .color(Color32::from_rgb(176, 185, 196)),
-            );
+            ui.label(RichText::new(detail).small().color(weak_text_color));
         }
 
         if suggest_preview
@@ -368,11 +365,7 @@ fn render_completion_documentation(
                 completion_item_preview_text(item, completion_prefix, suggest_preview_mode)
         {
             ui.add_space(8.0);
-            ui.label(
-                RichText::new("Preview")
-                    .small()
-                    .color(Color32::from_rgb(126, 136, 150)),
-            );
+            ui.label(RichText::new("Preview").small().color(weak_text_color));
             ui.label(RichText::new(preview).monospace().small());
         }
 
@@ -395,7 +388,7 @@ fn render_completion_documentation(
                 ui.label(
                     RichText::new("No documentation provided")
                         .small()
-                        .color(Color32::from_rgb(126, 136, 150)),
+                        .color(weak_text_color),
                 );
             }
         }

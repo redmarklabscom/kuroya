@@ -184,6 +184,14 @@ impl TextBuffer {
         &self.word_separators
     }
 
+    pub fn undo_entry_count(&self) -> usize {
+        self.undo.len()
+    }
+
+    pub fn redo_entry_count(&self) -> usize {
+        self.redo.len()
+    }
+
     pub fn history_snapshot(
         &self,
         max_entries_per_stack: usize,

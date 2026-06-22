@@ -2,7 +2,7 @@
 use crate::text_match::ascii_case_insensitive_contains as contains_ascii_case_insensitive;
 #[cfg(test)]
 use crate::text_match::ascii_case_insensitive_starts_with as starts_with_ascii_case_insensitive;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -109,8 +109,13 @@ pub struct ProjectIndexSignature {
     pub fingerprint: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct ProjectIndex {
+    data: Arc<ProjectIndexData>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct ProjectIndexData {
     root: PathBuf,
     files: Vec<PathBuf>,
     entries: Vec<ProjectEntry>,
@@ -143,17 +148,53 @@ impl<'de> Deserialize<'de> for ProjectIndex {
         } = ProjectIndexSerde::deserialize(deserializer)?;
         let symbol_search_paths = project_symbol_search_paths(&symbols);
         Ok(Self {
-            root,
-            files,
-            entries,
-            symbols,
-            symbol_search_paths,
-            truncated,
+            data: Arc::new(ProjectIndexData {
+                root,
+                files,
+                entries,
+                symbols,
+                symbol_search_paths,
+                truncated,
+            }),
         })
     }
 }
 
+impl Serialize for ProjectIndex {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.data.serialize(serializer)
+    }
+}
+
 impl ProjectIndex {
+    fn from_data(data: ProjectIndexData) -> Self {
+        Self {
+            data: Arc::new(data),
+        }
+    }
+
+    #[cfg(test)]
+    fn from_parts_for_test(
+        root: PathBuf,
+        files: Vec<PathBuf>,
+        entries: Vec<ProjectEntry>,
+        symbols: Vec<ProjectSymbol>,
+        symbol_search_paths: Vec<Arc<str>>,
+        truncated: bool,
+    ) -> Self {
+        Self::from_data(ProjectIndexData {
+            root,
+            files,
+            entries,
+            symbol_search_paths,
+            symbols,
+            truncated,
+        })
+    }
+
     pub fn rebuild(root: &Path, max_files: usize) -> Self {
         Self::rebuild_with_signature(root, max_files).0
     }
@@ -252,14 +293,14 @@ impl ProjectIndex {
             truncated,
             &signature_entries,
         );
-        let index = Self {
+        let index = Self::from_data(ProjectIndexData {
             root: root.to_path_buf(),
             files,
             entries,
             symbol_search_paths: project_symbol_search_paths(&symbols),
             symbols,
             truncated,
-        };
+        });
         (index, signature)
     }
 
@@ -320,39 +361,44 @@ impl ProjectIndex {
     }
 
     pub fn root(&self) -> &Path {
-        &self.root
+        &self.data.root
     }
 
     pub fn files(&self) -> &[PathBuf] {
-        &self.files
+        &self.data.files
     }
 
     pub fn symbols(&self) -> &[ProjectSymbol] {
-        &self.symbols
+        &self.data.symbols
     }
 
     pub fn all_entries(&self) -> &[ProjectEntry] {
-        &self.entries
+        &self.data.entries
     }
 
     pub fn truncated(&self) -> bool {
-        self.truncated
+        self.data.truncated
     }
 
     pub fn workspace_symbols(&self, query: &str, limit: usize) -> Vec<ProjectSymbol> {
-        workspace_symbols(&self.symbols, &self.symbol_search_paths, query, limit)
+        workspace_symbols(
+            &self.data.symbols,
+            &self.data.symbol_search_paths,
+            query,
+            limit,
+        )
     }
 
     pub fn entries(&self, root: &Path, limit: usize) -> Vec<ProjectEntry> {
-        let capacity = limit.min(self.entries.len());
-        if root == self.root.as_path() {
+        let capacity = limit.min(self.data.entries.len());
+        if root == self.data.root.as_path() {
             let mut entries = Vec::with_capacity(capacity);
-            entries.extend(self.entries.iter().take(limit).cloned());
+            entries.extend(self.data.entries.iter().take(limit).cloned());
             return entries;
         }
 
         let mut entries = Vec::with_capacity(capacity);
-        for entry in &self.entries {
+        for entry in &self.data.entries {
             if entries.len() >= limit {
                 break;
             }
@@ -1216,8 +1262,8 @@ mod tests {
 
         let index = ProjectIndex::rebuild(&root, 40_000);
         let expected_path = "src/taskrunner/mod.rs";
-        assert_eq!(index.symbol_search_paths.len(), 1);
-        assert_eq!(index.symbol_search_paths[0].as_ref(), expected_path);
+        assert_eq!(index.data.symbol_search_paths.len(), 1);
+        assert_eq!(index.data.symbol_search_paths[0].as_ref(), expected_path);
 
         let bytes = serde_json::to_vec(&index).unwrap();
         assert!(
@@ -1227,13 +1273,22 @@ mod tests {
         );
 
         let loaded = serde_json::from_slice::<ProjectIndex>(&bytes).unwrap();
-        assert_eq!(loaded.symbol_search_paths, index.symbol_search_paths);
+        assert_eq!(
+            loaded.data.symbol_search_paths,
+            index.data.symbol_search_paths
+        );
         let symbols = loaded.workspace_symbols("taskrunner", 8);
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "unrelated");
 
-        let mut legacy_index = loaded.clone();
-        legacy_index.symbol_search_paths.clear();
+        let legacy_index = ProjectIndex::from_parts_for_test(
+            loaded.root().to_path_buf(),
+            loaded.files().to_vec(),
+            loaded.all_entries().to_vec(),
+            loaded.symbols().to_vec(),
+            Vec::new(),
+            loaded.truncated(),
+        );
         let symbols = legacy_index.workspace_symbols("taskrunner", 8);
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "unrelated");
@@ -1242,42 +1297,70 @@ mod tests {
     }
 
     #[test]
+    fn project_index_clone_shares_backing_storage() {
+        let root = std::env::temp_dir().join(format!(
+            "kuroya-project-index-shallow-clone-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let index = ProjectIndex::rebuild(&root, 40_000);
+        let cloned = index.clone();
+
+        assert!(Arc::ptr_eq(&index.data, &cloned.data));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn project_workspace_symbol_search_ignores_stale_path_cache_lengths() {
         let root = PathBuf::from("workspace");
-        let mut index = ProjectIndex {
-            root: root.clone(),
-            files: Vec::new(),
-            entries: Vec::new(),
-            symbols: vec![
-                ProjectSymbol {
-                    name: "unrelated".to_owned(),
-                    kind: ProjectSymbolKind::Function,
-                    path: root.join("src/TaskRunner/mod.rs"),
-                    relative_path: PathBuf::from("src/TaskRunner/mod.rs"),
-                    line: 1,
-                    column: 1,
-                },
-                ProjectSymbol {
-                    name: "other".to_owned(),
-                    kind: ProjectSymbolKind::Function,
-                    path: root.join("src/lib.rs"),
-                    relative_path: PathBuf::from("src/lib.rs"),
-                    line: 1,
-                    column: 1,
-                },
-            ],
-            symbol_search_paths: vec![project_symbol_search_path(Path::new("src/lib.rs"))],
-            truncated: false,
-        };
+        let symbols = vec![
+            ProjectSymbol {
+                name: "unrelated".to_owned(),
+                kind: ProjectSymbolKind::Function,
+                path: root.join("src/TaskRunner/mod.rs"),
+                relative_path: PathBuf::from("src/TaskRunner/mod.rs"),
+                line: 1,
+                column: 1,
+            },
+            ProjectSymbol {
+                name: "other".to_owned(),
+                kind: ProjectSymbolKind::Function,
+                path: root.join("src/lib.rs"),
+                relative_path: PathBuf::from("src/lib.rs"),
+                line: 1,
+                column: 1,
+            },
+        ];
+        let index = ProjectIndex::from_parts_for_test(
+            root.clone(),
+            Vec::new(),
+            Vec::new(),
+            symbols.clone(),
+            vec![project_symbol_search_path(Path::new("src/lib.rs"))],
+            false,
+        );
 
-        let symbols = index.workspace_symbols("taskrunner", 8);
-        assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].name, "unrelated");
+        let matches = index.workspace_symbols("taskrunner", 8);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "unrelated");
 
-        index.symbol_search_paths.clear();
-        let symbols = index.workspace_symbols("taskrunner", 8);
-        assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].name, "unrelated");
+        let index = ProjectIndex::from_parts_for_test(
+            root,
+            Vec::new(),
+            Vec::new(),
+            symbols,
+            Vec::new(),
+            false,
+        );
+        let matches = index.workspace_symbols("taskrunner", 8);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "unrelated");
     }
 
     #[test]
@@ -1299,33 +1382,33 @@ mod tests {
 
         let index = ProjectIndex::rebuild(&root, 40_000);
         let first_index = index
-            .symbols
+            .symbols()
             .iter()
             .position(|symbol| symbol.name == "first_task")
             .unwrap();
         let second_index = index
-            .symbols
+            .symbols()
             .iter()
             .position(|symbol| symbol.name == "second_task")
             .unwrap();
         let third_index = index
-            .symbols
+            .symbols()
             .iter()
             .position(|symbol| symbol.name == "third_task")
             .unwrap();
         let task_runner_path = "src/taskrunner/mod.rs";
 
         assert_eq!(
-            index.symbol_search_paths[first_index].as_ref(),
+            index.data.symbol_search_paths[first_index].as_ref(),
             task_runner_path
         );
         assert!(std::sync::Arc::ptr_eq(
-            &index.symbol_search_paths[first_index],
-            &index.symbol_search_paths[second_index]
+            &index.data.symbol_search_paths[first_index],
+            &index.data.symbol_search_paths[second_index]
         ));
         assert!(!std::sync::Arc::ptr_eq(
-            &index.symbol_search_paths[first_index],
-            &index.symbol_search_paths[third_index]
+            &index.data.symbol_search_paths[first_index],
+            &index.data.symbol_search_paths[third_index]
         ));
 
         let symbols = index.workspace_symbols("second taskrunner", 8);

@@ -324,6 +324,7 @@ mod tests {
             normalize_key_chord("cTrL + ShIfT + P"),
             Some("Ctrl+Shift+P".to_owned())
         );
+        assert_eq!(normalize_key_chord("Esc"), Some("Escape".to_owned()));
     }
 
     #[test]

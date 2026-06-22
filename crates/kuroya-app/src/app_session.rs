@@ -203,12 +203,17 @@ impl KuroyaApp {
     }
 
     pub(crate) fn save_app_state(&self) -> anyhow::Result<()> {
-        AppState {
+        let app_state = AppState {
             recent_projects: self.recent_projects.clone(),
             trusted_workspaces: self.trusted_workspaces.clone(),
-            vim_keybindings: Some(self.settings.vim_keybindings),
+            vim_keybindings: Some(self.app_state_vim_keybindings),
+            vim: Some(self.app_state_vim.clone()),
+        };
+        #[cfg(test)]
+        if let Some(path) = &self.app_state_path_override {
+            return app_state.save_to_path(path);
         }
-        .save()
+        app_state.save()
     }
 
     pub(crate) fn build_session(&self) -> PersistedSession {

@@ -3,8 +3,8 @@ use crate::ui_state::selected_row_scroll_offset;
 #[cfg(test)]
 use crate::ui_text::truncate_middle;
 use eframe::egui::{
-    self, Color32, FontFamily, FontId, Rect, RichText, ScrollArea, Sense, Ui, WidgetInfo,
-    WidgetType, pos2, vec2,
+    self, FontFamily, FontId, Rect, RichText, ScrollArea, Sense, Ui, WidgetInfo, WidgetType, pos2,
+    vec2,
 };
 use kuroya_core::Command;
 use std::{borrow::Cow, fmt::Write};
@@ -96,10 +96,11 @@ fn render_command_palette_result_row(
         Sense::click(),
     );
     let painter = ui.painter();
+    let visuals = ui.visuals();
     if selected {
-        painter.rect_filled(rect, 4.0, Color32::from_rgb(31, 35, 42));
+        painter.rect_filled(rect, 4.0, visuals.widgets.active.weak_bg_fill);
     } else if response.hovered() {
-        painter.rect_filled(rect, 4.0, Color32::from_rgb(25, 29, 36));
+        painter.rect_filled(rect, 4.0, visuals.widgets.hovered.weak_bg_fill);
     }
 
     let enabled = ui.is_enabled();
@@ -114,7 +115,7 @@ fn render_command_palette_result_row(
         egui::Align2::LEFT_TOP,
         display.label(),
         label_font.clone(),
-        Color32::from_rgb(222, 226, 233),
+        visuals.text_color(),
     );
     if let Some(shortcut) = display.shortcut() {
         let chord_clip = command_palette_chord_clip_rect(rect);
@@ -126,7 +127,7 @@ fn render_command_palette_result_row(
             egui::Align2::RIGHT_TOP,
             shortcut,
             chord_font.clone(),
-            Color32::from_rgb(126, 136, 150),
+            visuals.weak_text_color(),
         );
     }
 

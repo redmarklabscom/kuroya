@@ -1041,14 +1041,13 @@ mod tests {
                 skipped_large_files: 1,
                 skipped_binary_files: 0,
                 skipped_unreadable_files: 1,
-                skipped_index_budget_files: 2,
             },
         };
 
         assert_eq!(
             project_search_result_summary(&result, false),
             Some(
-                "3 matches in 2 files from 12 files searched - 4 files skipped - truncated - previous search"
+                "3 matches in 2 files from 12 files searched - 2 files skipped - truncated - previous search"
                     .to_owned()
             )
         );

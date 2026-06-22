@@ -6,7 +6,7 @@ use crate::{
         selection_page_step,
     },
 };
-use eframe::egui::{self, Color32, Context, InputState, Key, RichText, ScrollArea, TextEdit};
+use eframe::egui::{self, Context, InputState, Key, RichText, ScrollArea, TextEdit};
 use kuroya_core::{
     GitBranch, GitBranchSortOrder, GitCheckoutType, git_branch_validation_error,
     text_match::ascii_case_insensitive_contains,
@@ -282,7 +282,7 @@ impl KuroyaApp {
                         ui.label(
                             RichText::new(format!("{row_count} branches"))
                                 .small()
-                                .color(Color32::from_rgb(126, 136, 150)),
+                                .color(ui.visuals().weak_text_color()),
                         );
                     });
                     return;
@@ -355,7 +355,7 @@ impl KuroyaApp {
                 ui.label(
                     RichText::new(format!("{row_count} branches"))
                         .small()
-                        .color(Color32::from_rgb(126, 136, 150)),
+                        .color(ui.visuals().weak_text_color()),
                 );
             });
         });

@@ -8,7 +8,7 @@ use crate::{
         workspace_guard_unsaved_changes_phrase,
     },
 };
-use eframe::egui::{self, Align, Color32, Context, Key, RichText};
+use eframe::egui::{self, Align, Context, Key, RichText};
 use kuroya_core::{BufferId, TextBuffer};
 use std::{collections::HashSet, path::PathBuf};
 
@@ -59,7 +59,11 @@ pub(super) fn render_workspace_switch_confirm_guard(
             changed_on_disk_count,
         ));
         if let Some(reason) = &save_block {
-            ui.label(RichText::new(reason).small().color(Color32::YELLOW));
+            ui.label(
+                RichText::new(reason)
+                    .small()
+                    .color(ui.visuals().warn_fg_color),
+            );
         }
 
         if ui.input(|input| input.key_pressed(Key::Escape)) {

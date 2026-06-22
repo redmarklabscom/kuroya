@@ -1,6 +1,12 @@
 use crate::{
-    KuroyaApp, editor_vim_key_events::vim_pending_search_status_label,
-    large_file_mode::buffer_uses_large_file_mode, ui_icons::IconKind, ui_text::count_label,
+    KuroyaApp,
+    editor_vim_key_events::{
+        vim_mode_status_label, vim_pending_command_status_label,
+        vim_pending_key_sequence_status_label, vim_pending_search_status_label,
+    },
+    large_file_mode::buffer_uses_large_file_mode,
+    ui_icons::IconKind,
+    ui_text::count_label,
 };
 use egui::{self, Align, RichText};
 use kuroya_core::{BufferId, DiagnosticSet, LanguageId, PluginLanguageRegistry, TextBuffer};
@@ -38,6 +44,17 @@ impl KuroyaApp {
             let lines = active.map(|buffer| buffer.len_lines()).unwrap_or_default();
             let cursor_label = active.map(cursor_status_label);
             ui.label(RichText::new(status_bar_message(&self.status)).small());
+            if self.settings.vim_keybindings {
+                if let Some(vim_status_label) =
+                    vim_pending_left_status_label(self.editor_vim_pending_key, &self.settings.vim)
+                {
+                    status_item(
+                        ui,
+                        IconKind::Command,
+                        prepare_status_item(vim_status_label, "Vim pending input"),
+                    );
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 let diagnostics_tooltip = diagnostics_status_tooltip(&self.diagnostics);
                 status_item(
@@ -72,13 +89,17 @@ impl KuroyaApp {
                         "Language servers",
                     ),
                 );
-                if let Some(vim_search_label) =
-                    vim_pending_search_status_label(self.editor_vim_pending_key)
-                {
+                if self.settings.vim_keybindings {
                     status_item(
                         ui,
-                        IconKind::Search,
-                        prepare_status_item(vim_search_label, "Vim search input"),
+                        IconKind::Command,
+                        prepare_status_item(
+                            vim_mode_status_label(
+                                self.editor_vim_mode,
+                                self.editor_vim_pending_key,
+                            ),
+                            "Vim mode",
+                        ),
                     );
                 }
                 status_item(
@@ -173,6 +194,15 @@ impl KuroyaApp {
     }
 }
 
+fn vim_pending_left_status_label(
+    pending: Option<crate::editor_vim_key_events::EditorVimPendingKey>,
+    vim_settings: &kuroya_core::EditorVimSettings,
+) -> Option<String> {
+    vim_pending_key_sequence_status_label(pending, vim_settings)
+        .or_else(|| vim_pending_command_status_label(pending))
+        .or_else(|| vim_pending_search_status_label(pending))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StatusBarDiskChangeState {
     active_changed_on_disk: bool,
@@ -222,6 +252,17 @@ fn language_id_status_label(language: LanguageId) -> &'static str {
         LanguageId::C => "C",
         LanguageId::Cpp => "Cpp",
         LanguageId::CSharp => "CSharp",
+        LanguageId::Php => "PHP",
+        LanguageId::Ruby => "Ruby",
+        LanguageId::Lua => "Lua",
+        LanguageId::Dart => "Dart",
+        LanguageId::Kotlin => "Kotlin",
+        LanguageId::Swift => "Swift",
+        LanguageId::Vue => "Vue",
+        LanguageId::Svelte => "Svelte",
+        LanguageId::Xml => "XML",
+        LanguageId::Dockerfile => "Dockerfile",
+        LanguageId::Terraform => "Terraform",
         LanguageId::Shell => "Shell",
         LanguageId::Diff => "Diff",
         LanguageId::PlainText => "PlainText",

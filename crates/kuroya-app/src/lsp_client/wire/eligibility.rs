@@ -1,5 +1,5 @@
 use kuroya_core::LspServerConfig;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn can_use_server_for_path(config: &LspServerConfig, root: &Path, path: &Path) -> bool {
     can_use_server_for_path_with_probe(config, root, path, Path::exists)
@@ -15,54 +15,90 @@ fn can_use_server_for_path_with_probe(
         return false;
     };
 
-    let mut root_child_cache = RootChildProbeCache::default();
+    if config.root_markers.is_empty() {
+        return path.starts_with(root);
+    }
+
+    let mut probe_cache = PathProbeCache::default();
     if path.parent() == Some(root) {
-        let exists = root_child_cache.get_or_probe(root, file_name, &mut path_exists);
+        let exists = probe_cache.get_or_probe(root_child_path(root, file_name), &mut path_exists);
         if exists {
             return true;
         }
     }
 
-    for marker in &config.root_markers {
-        let exists = root_child_cache.get_or_probe(root, marker, &mut path_exists);
-        if exists {
-            return true;
-        }
+    if nearest_marker_root_exists(config, root, path, &mut path_exists, &mut probe_cache) {
+        return true;
     }
 
-    root_child_cache.get_or_probe(root, file_name, path_exists)
+    probe_cache.get_or_probe(root_child_path(root, file_name), path_exists)
+        || path.starts_with(root)
 }
 
 #[derive(Default)]
-struct RootChildProbeCache<'a> {
-    entries: Vec<(&'a str, bool)>,
+struct PathProbeCache {
+    entries: Vec<(PathBuf, bool)>,
 }
 
-impl<'a> RootChildProbeCache<'a> {
+impl PathProbeCache {
     fn get_or_probe(
         &mut self,
-        root: &Path,
-        child: &'a str,
+        candidate: PathBuf,
         mut path_exists: impl FnMut(&Path) -> bool,
     ) -> bool {
         if let Some((_, exists)) = self
             .entries
             .iter()
-            .find(|(cached_child, _)| *cached_child == child)
+            .find(|(cached_candidate, _)| cached_candidate == &candidate)
         {
             return *exists;
         }
 
-        let exists = root_child_exists(root, child, &mut path_exists);
-        self.entries.push((child, exists));
+        let exists = path_exists(&candidate);
+        self.entries.push((candidate, exists));
         exists
     }
 }
 
-fn root_child_exists(root: &Path, child: &str, mut path_exists: impl FnMut(&Path) -> bool) -> bool {
+fn nearest_marker_root_exists(
+    config: &LspServerConfig,
+    root: &Path,
+    path: &Path,
+    mut path_exists: impl FnMut(&Path) -> bool,
+    probe_cache: &mut PathProbeCache,
+) -> bool {
+    if config.root_markers.is_empty() {
+        return false;
+    }
+
+    let Some(mut dir) = path.parent() else {
+        return false;
+    };
+
+    loop {
+        if dir.starts_with(root) {
+            for marker in &config.root_markers {
+                if probe_cache.get_or_probe(root_child_path(dir, marker), &mut path_exists) {
+                    return true;
+                }
+            }
+        }
+
+        if dir == root {
+            return false;
+        }
+
+        let Some(parent) = dir.parent() else {
+            return false;
+        };
+        dir = parent;
+    }
+}
+
+fn root_child_path(root: &Path, child: &str) -> PathBuf {
     let mut candidate = root.to_path_buf();
     candidate.push(child);
-    path_exists(&candidate)
+    candidate
 }
 
 #[cfg(test)]
@@ -88,7 +124,55 @@ mod tests {
             },
         ));
 
-        assert_eq!(probes.into_inner(), vec![root.join("Cargo.toml")]);
+        assert_eq!(
+            probes.into_inner(),
+            vec![
+                root.join("src/Cargo.toml"),
+                root.join("src/rust-project.json"),
+                root.join("Cargo.toml"),
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_workspace_file_without_markers_can_use_workspace_root() {
+        let config = config_with_markers(&["Cargo.toml", "rust-project.json"]);
+        let root = PathBuf::from("workspace");
+        let path = root.join("src/main.rs");
+
+        assert!(can_use_server_for_path_with_probe(
+            &config,
+            &root,
+            &path,
+            |_| false
+        ));
+    }
+
+    #[test]
+    fn nested_project_file_prefers_nearest_marker() {
+        let config = config_with_markers(&["Cargo.toml"]);
+        let root = PathBuf::from("workspace");
+        let nested_root = root.join("crates/app");
+        let path = nested_root.join("src/main.rs");
+        let probes = RefCell::new(Vec::new());
+
+        assert!(can_use_server_for_path_with_probe(
+            &config,
+            &root,
+            &path,
+            |candidate| {
+                probes.borrow_mut().push(candidate.to_path_buf());
+                candidate == nested_root.join("Cargo.toml") || candidate == root.join("Cargo.toml")
+            },
+        ));
+
+        assert_eq!(
+            probes.into_inner(),
+            vec![
+                nested_root.join("src/Cargo.toml"),
+                nested_root.join("Cargo.toml"),
+            ]
+        );
     }
 
     #[test]
@@ -112,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn markerless_nested_file_falls_back_to_root_source_name() {
+    fn markerless_nested_file_uses_workspace_root_without_probing() {
         let config = config_with_markers(&[]);
         let root = PathBuf::from("workspace");
         let path = root.join("src/main.rs");
@@ -124,21 +208,35 @@ mod tests {
             &path,
             |candidate| {
                 probes.borrow_mut().push(candidate.to_path_buf());
-                candidate == root.join("main.rs")
+                false
             },
         ));
 
-        assert_eq!(probes.into_inner(), vec![root.join("main.rs")]);
+        assert!(probes.into_inner().is_empty());
     }
 
     #[test]
-    fn nested_file_name_marker_is_not_probed_again_as_fallback() {
+    fn markerless_path_outside_workspace_is_not_eligible() {
+        let config = config_with_markers(&[]);
+        let root = PathBuf::from("workspace");
+        let path = PathBuf::from("other/src/main.rs");
+
+        assert!(!can_use_server_for_path_with_probe(
+            &config,
+            &root,
+            &path,
+            |_| true,
+        ));
+    }
+
+    #[test]
+    fn nested_file_name_marker_is_not_probed_again_before_workspace_fallback() {
         let config = config_with_markers(&["main.rs"]);
         let root = PathBuf::from("workspace");
         let path = root.join("src/main.rs");
         let probes = RefCell::new(Vec::new());
 
-        assert!(!can_use_server_for_path_with_probe(
+        assert!(can_use_server_for_path_with_probe(
             &config,
             &root,
             &path,
@@ -148,7 +246,10 @@ mod tests {
             },
         ));
 
-        assert_eq!(probes.into_inner(), vec![root.join("main.rs")]);
+        assert_eq!(
+            probes.into_inner(),
+            vec![root.join("src/main.rs"), root.join("main.rs")]
+        );
     }
 
     #[test]
@@ -170,18 +271,22 @@ mod tests {
 
         assert_eq!(
             probes.into_inner(),
-            vec![root.join("Cargo.toml"), root.join("main.rs")]
+            vec![
+                root.join("src/Cargo.toml"),
+                root.join("Cargo.toml"),
+                root.join("main.rs"),
+            ]
         );
     }
 
     #[test]
-    fn duplicate_root_file_name_markers_reuse_fallback_probe() {
+    fn duplicate_root_file_name_markers_reuse_probe_before_workspace_fallback() {
         let config = config_with_markers(&["main.rs", "main.rs"]);
         let root = PathBuf::from("workspace");
         let path = root.join("src/main.rs");
         let probes = RefCell::new(Vec::new());
 
-        assert!(!can_use_server_for_path_with_probe(
+        assert!(can_use_server_for_path_with_probe(
             &config,
             &root,
             &path,
@@ -191,7 +296,10 @@ mod tests {
             },
         ));
 
-        assert_eq!(probes.into_inner(), vec![root.join("main.rs")]);
+        assert_eq!(
+            probes.into_inner(),
+            vec![root.join("src/main.rs"), root.join("main.rs")]
+        );
     }
 
     #[test]
@@ -222,6 +330,7 @@ mod tests {
             language: "rust".to_owned(),
             command: "rust-analyzer".to_owned(),
             args: Vec::new(),
+            extensions: Vec::new(),
             root_markers: markers.iter().map(|marker| (*marker).to_owned()).collect(),
         }
     }

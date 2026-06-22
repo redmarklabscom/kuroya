@@ -1,6 +1,7 @@
 use crate::{
     KuroyaApp,
     path_display::display_error_label_cow,
+    settings_form::optional_setting_path_to_input,
     ui_event_channel::send_critical_ui_event,
     ui_events::{SettingsFontTarget, UiEvent},
 };
@@ -17,6 +18,7 @@ pub(super) struct PendingSettingsPanelActions {
     pub(super) clear_editor_font: bool,
     pub(super) choose_ui_font: bool,
     pub(super) clear_ui_font: bool,
+    pub(super) status: Option<String>,
 }
 
 impl KuroyaApp {
@@ -41,6 +43,8 @@ impl KuroyaApp {
         } else if actions.clear_ui_font {
             self.settings_ui_font_path.clear();
             self.status = "Cleared UI font file".to_owned();
+        } else if let Some(status) = actions.status {
+            self.status = status;
         }
     }
 
@@ -50,12 +54,19 @@ impl KuroyaApp {
             return;
         }
 
-        let had_pending_inputs = self.settings_panel_draft_validation().has_pending_inputs();
-        self.sync_settings_panel_inputs();
-        self.status = if had_pending_inputs {
-            "Reset settings draft".to_owned()
+        let validation = self.settings_panel_draft_validation();
+        let had_pending_inputs = validation.has_pending_inputs();
+        let default_candidate = self.settings_panel_default_candidate();
+        let already_default = !had_pending_inputs && default_candidate == self.settings;
+        self.settings_panel_draft = default_candidate;
+        self.settings_editor_font_path =
+            optional_setting_path_to_input(&self.settings_panel_draft.editor_font_path);
+        self.settings_ui_font_path =
+            optional_setting_path_to_input(&self.settings_panel_draft.ui_font_path);
+        self.status = if already_default {
+            "Settings already match defaults".to_owned()
         } else {
-            "Settings already match the current configuration".to_owned()
+            "Reset settings draft to defaults; apply to save".to_owned()
         };
     }
 
@@ -138,10 +149,10 @@ mod tests {
     use super::{PendingSettingsPanelActions, font_selection_failure_status};
     use crate::{
         KuroyaApp, app_startup_context::AppStartupContext,
-        path_display::DISPLAY_ERROR_LABEL_MAX_CHARS, terminal::TerminalPane,
-        ui_events::SettingsFontTarget,
+        path_display::DISPLAY_ERROR_LABEL_MAX_CHARS, persistence::AppState, terminal::TerminalPane,
+        ui_events::SettingsFontTarget, workspace_state::settings_path,
     };
-    use kuroya_core::{EditorSettings, Workspace};
+    use kuroya_core::{EditorSettings, EditorVimKeyOverride, EditorVimSettings, Workspace};
     use std::{
         path::PathBuf,
         time::{Instant, SystemTime, UNIX_EPOCH},
@@ -188,6 +199,106 @@ mod tests {
 
         assert_eq!(app.settings_panel_draft.font_size, 18.0);
         assert_eq!(app.status, "Open settings before resetting draft");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reset_settings_panel_draft_uses_defaults_after_apply() {
+        let root = temp_root("reset-applied-settings");
+        let settings = EditorSettings {
+            font_size: 18.0,
+            ui_font_size: 17.0,
+            editor_font_path: Some("fonts/current-editor.ttf".to_owned()),
+            ui_font_path: Some("fonts/current-ui.ttf".to_owned()),
+            ..EditorSettings::default()
+        };
+        let mut app = app_for_test(root.clone(), settings.clone());
+        app.settings_panel_open = true;
+        app.sync_settings_panel_inputs();
+
+        app.reset_settings_panel_draft();
+
+        let defaults = EditorSettings::default();
+        assert_eq!(app.settings.font_size, settings.font_size);
+        assert_eq!(app.settings.editor_font_path, settings.editor_font_path);
+        assert_eq!(app.settings_panel_draft.font_size, defaults.font_size);
+        assert_eq!(app.settings_panel_draft.ui_font_size, defaults.ui_font_size);
+        assert_eq!(
+            app.settings_panel_draft.editor_font_path,
+            defaults.editor_font_path
+        );
+        assert_eq!(app.settings_panel_draft.ui_font_path, defaults.ui_font_path);
+        assert!(app.settings_panel_draft_validation().has_pending_inputs());
+        assert_eq!(
+            app.status,
+            "Reset settings draft to defaults; apply to save"
+        );
+
+        app.apply_settings_panel_actions(PendingSettingsPanelActions {
+            apply: true,
+            ..PendingSettingsPanelActions::default()
+        });
+
+        assert_eq!(app.settings.font_size, defaults.font_size);
+        assert_eq!(app.settings.ui_font_size, defaults.ui_font_size);
+        assert_eq!(app.settings.editor_font_path, defaults.editor_font_path);
+        assert_eq!(app.settings.ui_font_path, defaults.ui_font_path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reset_settings_panel_draft_resets_vim_settings_after_apply() {
+        let root = temp_root("reset-vim-settings");
+        let settings = EditorSettings {
+            vim_keybindings: true,
+            vim: EditorVimSettings {
+                disabled_bindings: vec!["Q".to_owned()],
+                key_overrides: vec![EditorVimKeyOverride {
+                    before: "<Home>".to_owned(),
+                    after: "0".to_owned(),
+                    command: None,
+                }],
+            },
+            ..EditorSettings::default()
+        };
+        let mut app = app_for_test(root.clone(), settings);
+        let app_state_path = root.join("app-state.json");
+        app.app_state_path_override = Some(app_state_path.clone());
+        app.settings_panel_open = true;
+        app.sync_settings_panel_inputs();
+
+        app.reset_settings_panel_draft();
+        app.apply_settings_panel_actions(PendingSettingsPanelActions {
+            apply: true,
+            ..PendingSettingsPanelActions::default()
+        });
+
+        let defaults = EditorSettings::default();
+        assert_eq!(app.settings.vim_keybindings, defaults.vim_keybindings);
+        assert_eq!(app.settings.vim, defaults.vim);
+        let saved = EditorSettings::load_or_create_with_recovery(&settings_path(&root))
+            .unwrap()
+            .settings;
+        assert_eq!(saved.vim_keybindings, defaults.vim_keybindings);
+        assert_eq!(saved.vim, defaults.vim);
+        let app_state: AppState =
+            serde_json::from_str(&std::fs::read_to_string(app_state_path).unwrap()).unwrap();
+        assert_eq!(app_state.vim_keybindings, Some(defaults.vim_keybindings));
+        assert_eq!(app_state.vim, Some(defaults.vim));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reset_settings_panel_draft_reports_when_already_default() {
+        let root = temp_root("reset-already-default");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        app.settings_panel_open = true;
+        app.sync_settings_panel_inputs();
+
+        app.reset_settings_panel_draft();
+
+        assert!(!app.settings_panel_draft_validation().has_pending_inputs());
+        assert_eq!(app.status, "Settings already match defaults");
         let _ = std::fs::remove_dir_all(root);
     }
 

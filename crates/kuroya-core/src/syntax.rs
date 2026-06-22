@@ -114,6 +114,17 @@ pub enum LanguageId {
     C,
     Cpp,
     CSharp,
+    Php,
+    Ruby,
+    Lua,
+    Dart,
+    Kotlin,
+    Swift,
+    Vue,
+    Svelte,
+    Xml,
+    Dockerfile,
+    Terraform,
     Shell,
     Diff,
     PlainText,
@@ -151,6 +162,10 @@ impl LanguageId {
             ],
         ) {
             Some(Self::Shell)
+        } else if matches_ignore_ascii_case(file_name, &["Gemfile", "Rakefile", "Podfile"]) {
+            Some(Self::Ruby)
+        } else if dockerfile_like_file_name(file_name) {
+            Some(Self::Dockerfile)
         } else {
             None
         }
@@ -161,17 +176,17 @@ impl LanguageId {
             Self::Rust
         } else if ext.eq_ignore_ascii_case("toml") {
             Self::Toml
-        } else if ext.eq_ignore_ascii_case("json") {
+        } else if matches_ignore_ascii_case(ext, &["json", "jsonc"]) {
             Self::Json
         } else if ext.eq_ignore_ascii_case("sql") {
             Self::Sql
-        } else if matches_ignore_ascii_case(ext, &["md", "markdown"]) {
+        } else if matches_ignore_ascii_case(ext, &["md", "markdown", "mdx"]) {
             Self::Markdown
         } else if matches_ignore_ascii_case(ext, &["ps1", "psm1"]) {
             Self::PowerShell
         } else if ext.eq_ignore_ascii_case("py") {
             Self::Python
-        } else if matches_ignore_ascii_case(ext, &["ts", "tsx"]) {
+        } else if matches_ignore_ascii_case(ext, &["ts", "tsx", "mts", "cts"]) {
             Self::TypeScript
         } else if matches_ignore_ascii_case(ext, &["js", "jsx", "mjs", "cjs"]) {
             Self::JavaScript
@@ -191,6 +206,28 @@ impl LanguageId {
             Self::Cpp
         } else if ext.eq_ignore_ascii_case("cs") {
             Self::CSharp
+        } else if matches_ignore_ascii_case(ext, &["php", "phtml"]) {
+            Self::Php
+        } else if matches_ignore_ascii_case(ext, &["rb", "rake", "gemspec"]) {
+            Self::Ruby
+        } else if ext.eq_ignore_ascii_case("lua") {
+            Self::Lua
+        } else if ext.eq_ignore_ascii_case("dart") {
+            Self::Dart
+        } else if matches_ignore_ascii_case(ext, &["kt", "kts"]) {
+            Self::Kotlin
+        } else if ext.eq_ignore_ascii_case("swift") {
+            Self::Swift
+        } else if ext.eq_ignore_ascii_case("vue") {
+            Self::Vue
+        } else if ext.eq_ignore_ascii_case("svelte") {
+            Self::Svelte
+        } else if matches_ignore_ascii_case(ext, &["xml", "xsd", "xsl", "svg"]) {
+            Self::Xml
+        } else if matches_ignore_ascii_case(ext, &["dockerfile", "containerfile"]) {
+            Self::Dockerfile
+        } else if matches_ignore_ascii_case(ext, &["tf", "tfvars", "hcl"]) {
+            Self::Terraform
         } else if matches_ignore_ascii_case(ext, &["sh", "bash", "zsh"]) {
             Self::Shell
         } else if matches_ignore_ascii_case(ext, &["diff", "patch"]) {
@@ -219,6 +256,17 @@ impl LanguageId {
             Self::C => "c",
             Self::Cpp => "cpp",
             Self::CSharp => "cs",
+            Self::Php => "php",
+            Self::Ruby => "rb",
+            Self::Lua => "lua",
+            Self::Dart => "dart",
+            Self::Kotlin => "kt",
+            Self::Swift => "swift",
+            Self::Vue => "vue",
+            Self::Svelte => "svelte",
+            Self::Xml => "xml",
+            Self::Dockerfile => "Dockerfile",
+            Self::Terraform => "tf",
             Self::Shell => "sh",
             Self::Diff => "diff",
             Self::PlainText => "txt",
@@ -244,6 +292,17 @@ impl LanguageId {
             Self::C => "c",
             Self::Cpp => "cpp",
             Self::CSharp => "csharp",
+            Self::Php => "php",
+            Self::Ruby => "ruby",
+            Self::Lua => "lua",
+            Self::Dart => "dart",
+            Self::Kotlin => "kotlin",
+            Self::Swift => "swift",
+            Self::Vue => "vue",
+            Self::Svelte => "svelte",
+            Self::Xml => "xml",
+            Self::Dockerfile => "dockerfile",
+            Self::Terraform => "terraform",
             Self::Shell => "shellscript",
             Self::Diff => "diff",
             Self::PlainText => "plaintext",
@@ -268,14 +327,41 @@ impl LanguageId {
                 auto_closing_pairs: C_STYLE_AUTO_CLOSING_PAIRS,
                 increase_indent_line_suffixes: DEFAULT_INDENT_SUFFIXES,
             },
-            Self::Go | Self::Java | Self::C | Self::Cpp | Self::CSharp => LanguageConfiguration {
+            Self::Go
+            | Self::Java
+            | Self::C
+            | Self::Cpp
+            | Self::CSharp
+            | Self::Dart
+            | Self::Kotlin
+            | Self::Swift => LanguageConfiguration {
                 line_comment_prefix: Some("//"),
                 brackets: C_STYLE_BRACKETS,
                 auto_closing_pairs: C_STYLE_AUTO_CLOSING_PAIRS,
                 increase_indent_line_suffixes: DEFAULT_INDENT_SUFFIXES,
             },
-            Self::Toml | Self::PowerShell => LanguageConfiguration {
-                line_comment_prefix: Some("#"),
+            Self::Toml | Self::PowerShell | Self::Ruby | Self::Dockerfile | Self::Terraform => {
+                LanguageConfiguration {
+                    line_comment_prefix: Some("#"),
+                    brackets: C_STYLE_BRACKETS,
+                    auto_closing_pairs: C_STYLE_AUTO_CLOSING_PAIRS,
+                    increase_indent_line_suffixes: DEFAULT_INDENT_SUFFIXES,
+                }
+            }
+            Self::Lua => LanguageConfiguration {
+                line_comment_prefix: Some("--"),
+                brackets: C_STYLE_BRACKETS,
+                auto_closing_pairs: C_STYLE_AUTO_CLOSING_PAIRS,
+                increase_indent_line_suffixes: DEFAULT_INDENT_SUFFIXES,
+            },
+            Self::Php => LanguageConfiguration {
+                line_comment_prefix: Some("//"),
+                brackets: C_STYLE_BRACKETS,
+                auto_closing_pairs: C_STYLE_AUTO_CLOSING_PAIRS,
+                increase_indent_line_suffixes: DEFAULT_INDENT_SUFFIXES,
+            },
+            Self::Xml => LanguageConfiguration {
+                line_comment_prefix: None,
                 brackets: C_STYLE_BRACKETS,
                 auto_closing_pairs: C_STYLE_AUTO_CLOSING_PAIRS,
                 increase_indent_line_suffixes: DEFAULT_INDENT_SUFFIXES,
@@ -316,7 +402,7 @@ impl LanguageId {
                 auto_closing_pairs: C_STYLE_AUTO_CLOSING_PAIRS,
                 increase_indent_line_suffixes: NO_INDENT_SUFFIXES,
             },
-            Self::Css | Self::Html => LanguageConfiguration {
+            Self::Css | Self::Html | Self::Vue | Self::Svelte => LanguageConfiguration {
                 line_comment_prefix: None,
                 brackets: C_STYLE_BRACKETS,
                 auto_closing_pairs: C_STYLE_AUTO_CLOSING_PAIRS,
@@ -338,6 +424,17 @@ impl LanguageId {
     }
 }
 
+fn dockerfile_like_file_name(file_name: &str) -> bool {
+    file_name.eq_ignore_ascii_case("Dockerfile")
+        || file_name.eq_ignore_ascii_case("Containerfile")
+        || file_name
+            .get(..11)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Dockerfile."))
+        || file_name
+            .get(..14)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Containerfile."))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,11 +449,19 @@ mod tests {
         assert_eq!(LanguageId::Go.line_comment_prefix(), Some("//"));
         assert_eq!(LanguageId::Java.line_comment_prefix(), Some("//"));
         assert_eq!(LanguageId::Cpp.line_comment_prefix(), Some("//"));
+        assert_eq!(LanguageId::Php.line_comment_prefix(), Some("//"));
+        assert_eq!(LanguageId::Lua.line_comment_prefix(), Some("--"));
+        assert_eq!(LanguageId::Ruby.line_comment_prefix(), Some("#"));
+        assert_eq!(LanguageId::Terraform.line_comment_prefix(), Some("#"));
+        assert_eq!(LanguageId::Dockerfile.line_comment_prefix(), Some("#"));
         assert_eq!(LanguageId::Shell.line_comment_prefix(), Some("#"));
         assert_eq!(LanguageId::Yaml.line_comment_prefix(), Some("#"));
         assert_eq!(LanguageId::Json.line_comment_prefix(), None);
         assert_eq!(LanguageId::Css.line_comment_prefix(), None);
         assert_eq!(LanguageId::Html.line_comment_prefix(), None);
+        assert_eq!(LanguageId::Vue.line_comment_prefix(), None);
+        assert_eq!(LanguageId::Svelte.line_comment_prefix(), None);
+        assert_eq!(LanguageId::Xml.line_comment_prefix(), None);
         assert_eq!(LanguageId::Diff.line_comment_prefix(), None);
         assert_eq!(LanguageId::PlainText.line_comment_prefix(), None);
     }
@@ -365,8 +470,20 @@ mod tests {
     fn language_detection_covers_common_daily_driver_file_types() {
         assert_eq!(LanguageId::from_path(Path::new("app.css")), LanguageId::Css);
         assert_eq!(
+            LanguageId::from_path(Path::new("app.module.scss")),
+            LanguageId::Css
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("settings.jsonc")),
+            LanguageId::Json
+        );
+        assert_eq!(
             LanguageId::from_path(Path::new("index.html")),
             LanguageId::Html
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("docs/page.mdx")),
+            LanguageId::Markdown
         );
         assert_eq!(
             LanguageId::from_path(Path::new("compose.yml")),
@@ -390,6 +507,45 @@ mod tests {
             LanguageId::from_path(Path::new("scripts/build.sh")),
             LanguageId::Shell
         );
+        assert_eq!(
+            LanguageId::from_path(Path::new("index.php")),
+            LanguageId::Php
+        );
+        assert_eq!(LanguageId::from_path(Path::new("app.rb")), LanguageId::Ruby);
+        assert_eq!(
+            LanguageId::from_path(Path::new("init.lua")),
+            LanguageId::Lua
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("main.dart")),
+            LanguageId::Dart
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("Main.kt")),
+            LanguageId::Kotlin
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("module.mts")),
+            LanguageId::TypeScript
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("module.cts")),
+            LanguageId::TypeScript
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("Package.swift")),
+            LanguageId::Swift
+        );
+        assert_eq!(LanguageId::from_path(Path::new("App.vue")), LanguageId::Vue);
+        assert_eq!(
+            LanguageId::from_path(Path::new("App.svelte")),
+            LanguageId::Svelte
+        );
+        assert_eq!(LanguageId::from_path(Path::new("pom.xml")), LanguageId::Xml);
+        assert_eq!(
+            LanguageId::from_path(Path::new("main.tf")),
+            LanguageId::Terraform
+        );
     }
 
     #[test]
@@ -410,6 +566,22 @@ mod tests {
         assert_eq!(
             LanguageId::from_path(Path::new("workspace/go.work")),
             LanguageId::Go
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("Gemfile")),
+            LanguageId::Ruby
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("Dockerfile")),
+            LanguageId::Dockerfile
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("docker/Dockerfile.dev")),
+            LanguageId::Dockerfile
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("Containerfile.test")),
+            LanguageId::Dockerfile
         );
     }
 
@@ -504,6 +676,17 @@ mod tests {
         assert_eq!(LanguageId::Go.activation_id(), "go");
         assert_eq!(LanguageId::Cpp.activation_id(), "cpp");
         assert_eq!(LanguageId::CSharp.activation_id(), "csharp");
+        assert_eq!(LanguageId::Php.activation_id(), "php");
+        assert_eq!(LanguageId::Ruby.activation_id(), "ruby");
+        assert_eq!(LanguageId::Lua.activation_id(), "lua");
+        assert_eq!(LanguageId::Dart.activation_id(), "dart");
+        assert_eq!(LanguageId::Kotlin.activation_id(), "kotlin");
+        assert_eq!(LanguageId::Swift.activation_id(), "swift");
+        assert_eq!(LanguageId::Vue.activation_id(), "vue");
+        assert_eq!(LanguageId::Svelte.activation_id(), "svelte");
+        assert_eq!(LanguageId::Xml.activation_id(), "xml");
+        assert_eq!(LanguageId::Dockerfile.activation_id(), "dockerfile");
+        assert_eq!(LanguageId::Terraform.activation_id(), "terraform");
         assert_eq!(LanguageId::Shell.activation_id(), "shellscript");
         assert_eq!(LanguageId::PlainText.activation_id(), "plaintext");
     }

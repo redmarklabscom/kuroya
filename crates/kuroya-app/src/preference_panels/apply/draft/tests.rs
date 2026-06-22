@@ -1,9 +1,9 @@
 use super::apply_settings_panel_draft;
 use kuroya_core::{
-    DiffAlgorithm, DiffWordWrap, EDITOR_FONT_LIGATURES_ON, EDITOR_FONT_VARIATIONS_TRANSLATE,
-    EditorAccessibilitySupport, EditorAutoSaveMode, EditorBracketPairGuideMode,
-    EditorColorDecoratorsActivatedOn, EditorCursorSmoothCaretAnimation, EditorCursorStyle,
-    EditorCursorSurroundingLinesStyle, EditorDefaultColorDecorators,
+    Command, DiffAlgorithm, DiffWordWrap, EDITOR_FONT_LIGATURES_ON,
+    EDITOR_FONT_VARIATIONS_TRANSLATE, EditorAccessibilitySupport, EditorAutoSaveMode,
+    EditorBracketPairGuideMode, EditorColorDecoratorsActivatedOn, EditorCursorSmoothCaretAnimation,
+    EditorCursorStyle, EditorCursorSurroundingLinesStyle, EditorDefaultColorDecorators,
     EditorDropIntoEditorShowDropSelector, EditorExperimentalGpuAcceleration,
     EditorExperimentalWhitespaceRendering, EditorFindAutoFindInSelection, EditorFindHistory,
     EditorFindSeedSearchStringFromSelection, EditorFoldingStrategy, EditorGotoLocationMultiple,
@@ -11,20 +11,90 @@ use kuroya_core::{
     EditorLightbulbMode, EditorLineDecorationsWidth, EditorLineNumbers, EditorMatchBrackets,
     EditorMinimapAutohide, EditorMinimapShowSlider, EditorMinimapSide, EditorMinimapSize,
     EditorMouseMiddleClickAction, EditorMouseStyle, EditorMultiCursorModifier,
-    EditorMultiCursorPaste, EditorOccurrencesHighlight, EditorPasteAsShowPasteSelector,
-    EditorPeekWidgetDefaultFocus, EditorRenderLineHighlight, EditorRenderValidationDecorations,
-    EditorRenderWhitespace, EditorScrollbarVisibility, EditorSettings, EditorShowFoldingControls,
-    EditorSnippetSuggestions, EditorStickyScrollDefaultModel, EditorSuggestInsertMode,
-    EditorSuggestPreviewMode, EditorSuggestSelection, EditorSuggestSelectionMode,
-    EditorTabCompletion, EditorUnicodeHighlightNonBasicAscii, EditorUnicodeHighlightScope,
-    EditorUnusualLineTerminators, EditorWordBreak, EditorWordWrap, EditorWordWrapOverride,
-    EditorWrappingIndent, EditorWrappingStrategy, GitCheckoutType, GitCountBadge, ScmCountBadge,
-    ScmProviderCountBadge, TerminalConfirmOnExit, TerminalConfirmOnKill, TerminalCursorStyle,
-    TerminalHideOnStartup, TerminalInactiveCursorStyle, TerminalMiddleClickBehavior,
-    TerminalMultiLinePasteWarning, TerminalRightClickBehavior, TerminalSplitCwd,
-    TerminalTabsFocusMode, TerminalTabsHideCondition, TerminalTabsLocation,
-    TerminalTabsShowActions, TerminalTabsShowActiveTerminal,
+    EditorMultiCursorPaste, EditorPasteAsShowPasteSelector, EditorPeekWidgetDefaultFocus,
+    EditorRenderLineHighlight, EditorRenderValidationDecorations, EditorRenderWhitespace,
+    EditorScrollbarVisibility, EditorSettings, EditorShowFoldingControls, EditorSnippetSuggestions,
+    EditorStickyScrollDefaultModel, EditorSuggestInsertMode, EditorSuggestPreviewMode,
+    EditorSuggestSelection, EditorSuggestSelectionMode, EditorTabCompletion,
+    EditorUnicodeHighlightNonBasicAscii, EditorUnicodeHighlightScope, EditorUnusualLineTerminators,
+    EditorVimKeyOverride, EditorVimSettings, EditorWordBreak, EditorWordWrap,
+    EditorWordWrapOverride, EditorWrappingIndent, EditorWrappingStrategy, GitCheckoutType,
+    GitCountBadge, LspServerConfig, ScmCountBadge, ScmProviderCountBadge, TerminalConfirmOnExit,
+    TerminalConfirmOnKill, TerminalCursorStyle, TerminalHideOnStartup, TerminalInactiveCursorStyle,
+    TerminalMiddleClickBehavior, TerminalMultiLinePasteWarning, TerminalRightClickBehavior,
+    TerminalSplitCwd, TerminalTabsFocusMode, TerminalTabsHideCondition, TerminalTabsLocation,
+    TerminalTabsShowActions, TerminalTabsShowActiveTerminal, ThemeSettings,
 };
+
+#[test]
+fn draft_apply_sanitizes_vim_binding_rows() {
+    let mut settings = EditorSettings::default();
+    let draft = EditorSettings {
+        vim_keybindings: true,
+        vim: EditorVimSettings {
+            disabled_bindings: vec![
+                " x ".to_owned(),
+                "x".to_owned(),
+                String::new(),
+                " <C-n> ".to_owned(),
+                "<Nope>".to_owned(),
+            ],
+            key_overrides: vec![
+                EditorVimKeyOverride {
+                    before: " K ".to_owned(),
+                    after: String::new(),
+                    command: Some(Command::RequestHover),
+                },
+                EditorVimKeyOverride {
+                    before: "H".to_owned(),
+                    after: " 0 ".to_owned(),
+                    command: None,
+                },
+                EditorVimKeyOverride {
+                    before: String::new(),
+                    after: "gg".to_owned(),
+                    command: None,
+                },
+                EditorVimKeyOverride {
+                    before: " <Home> ".to_owned(),
+                    after: " <C-r> ".to_owned(),
+                    command: None,
+                },
+                EditorVimKeyOverride {
+                    before: "L".to_owned(),
+                    after: "<Left>".to_owned(),
+                    command: None,
+                },
+            ],
+        },
+        ..EditorSettings::default()
+    };
+
+    apply_settings_panel_draft(&mut settings, &draft, "", "");
+
+    assert!(settings.vim_keybindings);
+    assert_eq!(settings.vim.disabled_bindings, ["x", "<C-n>"]);
+    assert_eq!(
+        settings.vim.key_overrides,
+        [
+            EditorVimKeyOverride {
+                before: "K".to_owned(),
+                after: String::new(),
+                command: Some(Command::RequestHover),
+            },
+            EditorVimKeyOverride {
+                before: "H".to_owned(),
+                after: "0".to_owned(),
+                command: None,
+            },
+            EditorVimKeyOverride {
+                before: "<Home>".to_owned(),
+                after: "<C-r>".to_owned(),
+                command: None,
+            },
+        ]
+    );
+}
 
 #[test]
 fn draft_apply_copies_word_separators() {
@@ -161,8 +231,6 @@ fn draft_apply_copies_word_separators() {
             kuroya_core::EditorInlineSuggestShowOnSuggestConflict::WhenSuggestListIsIncomplete,
         inline_suggest_experimental_empty_response_information: false,
         inline_completions_accessibility_verbose: true,
-        occurrences_highlight: EditorOccurrencesHighlight::MultiFile,
-        occurrences_highlight_delay_ms: 175,
         lightbulb: EditorLightbulbMode::On,
         render_validation_decorations: EditorRenderValidationDecorations::Off,
         document_highlights_enabled: false,
@@ -307,9 +375,6 @@ fn draft_apply_copies_word_separators() {
         cursor_surrounding_lines: 3,
         cursor_surrounding_lines_style: EditorCursorSurroundingLinesStyle::All,
         render_line_highlight_only_when_focus: true,
-        selection_highlight: false,
-        selection_highlight_max_length: 12,
-        selection_highlight_multiline: true,
         smart_select_select_leading_and_trailing_whitespace: false,
         smart_select_select_subwords: false,
         find_seed_search_string_from_selection: EditorFindSeedSearchStringFromSelection::Selection,
@@ -742,11 +807,6 @@ fn draft_apply_copies_word_separators() {
     );
     assert!(!settings.inline_suggest_experimental_empty_response_information);
     assert!(settings.inline_completions_accessibility_verbose);
-    assert_eq!(
-        settings.occurrences_highlight,
-        EditorOccurrencesHighlight::MultiFile
-    );
-    assert_eq!(settings.occurrences_highlight_delay_ms, 175);
     assert_eq!(settings.lightbulb, EditorLightbulbMode::On);
     assert_eq!(
         settings.render_validation_decorations,
@@ -969,9 +1029,6 @@ fn draft_apply_copies_word_separators() {
         EditorCursorSurroundingLinesStyle::All
     );
     assert!(settings.render_line_highlight_only_when_focus);
-    assert!(!settings.selection_highlight);
-    assert_eq!(settings.selection_highlight_max_length, 12);
-    assert!(settings.selection_highlight_multiline);
     assert!(!settings.smart_select_select_leading_and_trailing_whitespace);
     assert!(!settings.smart_select_select_subwords);
     assert_eq!(
@@ -1422,6 +1479,166 @@ fn apply_settings_panel_draft_rejects_terminal_cwd_control_characters() {
     apply_settings_panel_draft(&mut settings, &draft, "", "");
 
     assert_eq!(settings.terminal_cwd, None);
+}
+
+#[test]
+fn apply_settings_panel_draft_normalizes_lsp_server_configs() {
+    let mut settings = EditorSettings {
+        lsp_servers: vec![LspServerConfig {
+            language: "old".to_owned(),
+            command: "old-lsp".to_owned(),
+            args: Vec::new(),
+            extensions: Vec::new(),
+            root_markers: Vec::new(),
+        }],
+        ..EditorSettings::default()
+    };
+    let draft = EditorSettings {
+        lsp_servers: vec![
+            LspServerConfig {
+                language: " typescript\u{200b} ".to_owned(),
+                command: " typescript-language-server ".to_owned(),
+                args: vec![" --stdio ".to_owned()],
+                extensions: vec![" .ts ".to_owned(), ".tsx".to_owned()],
+                root_markers: vec![" package.json ".to_owned()],
+            },
+            LspServerConfig {
+                language: " ".to_owned(),
+                command: "missing-language-lsp".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+            },
+            LspServerConfig {
+                language: " Python ".to_owned(),
+                command: " pyright-langserver ".to_owned(),
+                args: vec![" --stdio ".to_owned(), "\u{202e}".to_owned()],
+                extensions: vec![".py".to_owned(), "py".to_owned(), ".".to_owned()],
+                root_markers: vec![
+                    " pyproject.toml ".to_owned(),
+                    "pyproject.toml".to_owned(),
+                    " .git ".to_owned(),
+                ],
+            },
+            LspServerConfig {
+                language: "typescript".to_owned(),
+                command: "custom-ts-lsp".to_owned(),
+                args: vec![" --stdio ".to_owned(), "x\nbad".to_owned()],
+                extensions: vec![" .ts ".to_owned(), ".mts".to_owned()],
+                root_markers: vec![" .git ".to_owned()],
+            },
+        ],
+        ..EditorSettings::default()
+    };
+
+    apply_settings_panel_draft(&mut settings, &draft, "", "");
+
+    assert_eq!(settings.lsp_servers.len(), 2);
+    let typescript = settings
+        .lsp_servers
+        .iter()
+        .find(|server| server.language == "typescript")
+        .expect("typescript server should be retained");
+    let python = settings
+        .lsp_servers
+        .iter()
+        .find(|server| server.language == "python")
+        .expect("python server should be retained");
+
+    assert_eq!(typescript.command, "custom-ts-lsp");
+    assert_eq!(typescript.args, ["--stdio", "x bad"]);
+    assert_eq!(typescript.extensions, ["ts", "mts"]);
+    assert_eq!(typescript.root_markers, [".git"]);
+    assert_eq!(python.command, "pyright-langserver");
+    assert_eq!(python.args, ["--stdio"]);
+    assert_eq!(python.extensions, ["py"]);
+    assert_eq!(python.root_markers, ["pyproject.toml", ".git"]);
+}
+
+#[test]
+fn apply_settings_panel_draft_normalizes_custom_theme_paths() {
+    let mut settings = EditorSettings {
+        custom_theme_paths: vec!["old.toml".to_owned()],
+        active_custom_theme_path: Some("old.toml".to_owned()),
+        ..EditorSettings::default()
+    };
+    let draft = EditorSettings {
+        custom_theme_paths: vec![
+            " .kuroya/themes/night.toml ".to_owned(),
+            "".to_owned(),
+            "\u{202e}".to_owned(),
+            "themes/day.toml".to_owned(),
+        ],
+        ..EditorSettings::default()
+    };
+
+    apply_settings_panel_draft(&mut settings, &draft, "", "");
+
+    assert_eq!(
+        settings.custom_theme_paths,
+        [".kuroya/themes/night.toml", "themes/day.toml"]
+    );
+    assert_eq!(settings.active_custom_theme_path, None);
+}
+
+#[test]
+fn apply_settings_panel_draft_copies_theme_selection() {
+    let mut settings = EditorSettings::default();
+    let draft = EditorSettings {
+        custom_theme_paths: vec!["themes/live.toml".to_owned()],
+        active_custom_theme_path: Some("themes/live.toml".to_owned()),
+        theme: ThemeSettings {
+            name: "Live Theme".to_owned(),
+            background: [1, 2, 3],
+            panel: [4, 5, 6],
+            panel_alt: [7, 8, 9],
+            text: [10, 11, 12],
+            muted_text: [13, 14, 15],
+            accent: [16, 17, 18],
+            selection: None,
+            warning: [19, 20, 21],
+            error: [22, 23, 24],
+        },
+        ..EditorSettings::default()
+    };
+
+    apply_settings_panel_draft(&mut settings, &draft, "", "");
+
+    assert_eq!(settings.theme, draft.theme);
+    assert_eq!(
+        settings.active_custom_theme_path.as_deref(),
+        Some("themes/live.toml")
+    );
+}
+
+#[test]
+fn apply_settings_panel_draft_caps_custom_theme_paths_and_preserves_active_match() {
+    let active_path = "theme-42.toml".to_owned();
+    let mut settings = EditorSettings {
+        active_custom_theme_path: Some(active_path.clone()),
+        ..EditorSettings::default()
+    };
+    let mut paths = (0..300)
+        .map(|index| format!(" theme-{index}.toml "))
+        .collect::<Vec<_>>();
+    paths.push("theme-42.toml".to_owned());
+    paths.push("theme-42.toml".to_owned());
+    paths.push("x".repeat(9_000));
+    let draft = EditorSettings {
+        custom_theme_paths: paths,
+        ..EditorSettings::default()
+    };
+
+    apply_settings_panel_draft(&mut settings, &draft, "", "");
+
+    assert_eq!(settings.custom_theme_paths.len(), 256);
+    assert!(
+        settings
+            .custom_theme_paths
+            .iter()
+            .all(|path| path.chars().count() <= 4096)
+    );
+    assert_eq!(settings.active_custom_theme_path, Some(active_path));
 }
 
 #[test]

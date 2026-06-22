@@ -60,8 +60,12 @@ pub(crate) fn paint_bracket_pair_guides(
             open_pos.line,
             open_pos.column,
         );
-        let stroke =
-            bracket_pair_guide_stroke(guide.depth, active, row.highlight_active_bracket_pair);
+        let stroke = bracket_pair_guide_stroke(
+            guide.depth,
+            active,
+            row.highlight_active_bracket_pair,
+            row.weak_text_color,
+        );
 
         if draw_vertical {
             let top = if line_idx == open_pos.line {
@@ -227,11 +231,16 @@ fn paint_horizontal_bracket_pair_guide(
     painter.line_segment([pos2(left, y), pos2(right, y)], stroke);
 }
 
-fn bracket_pair_guide_stroke(depth: usize, active: bool, highlight_active: bool) -> egui::Stroke {
+fn bracket_pair_guide_stroke(
+    depth: usize,
+    active: bool,
+    highlight_active: bool,
+    inactive_color: Color32,
+) -> egui::Stroke {
     if active && highlight_active {
         egui::Stroke::new(1.5, bracket_depth_color(depth))
     } else {
-        egui::Stroke::new(1.0, Color32::from_rgb(49, 56, 67))
+        egui::Stroke::new(1.0, inactive_color)
     }
 }
 

@@ -4,6 +4,7 @@ use eframe::egui::{Context, Event, Key};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CapturedKeybinding {
     Chord(String),
+    Escape,
     Cancel,
     Rejected(String),
 }
@@ -25,8 +26,14 @@ pub(crate) fn capture_keybinding_event(events: &[Event]) -> Option<CapturedKeybi
             continue;
         };
 
-        if *key == Key::Escape {
-            return Some(CapturedKeybinding::Cancel);
+        if *key == Key::Escape
+            && !modifiers.ctrl
+            && !modifiers.alt
+            && !modifiers.shift
+            && !modifiers.command
+            && !modifiers.mac_cmd
+        {
+            return Some(CapturedKeybinding::Escape);
         }
         if keybinding_requires_primary_modifier(*key)
             && !(modifiers.ctrl || modifiers.alt || modifiers.mac_cmd)

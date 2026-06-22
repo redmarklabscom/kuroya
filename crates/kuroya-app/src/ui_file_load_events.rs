@@ -480,7 +480,7 @@ mod tests {
         LoadedImagePreview {
             width,
             height,
-            rgba: vec![255; width * height * 4],
+            rgba: Some(vec![255; width * height * 4]),
             byte_len,
         }
     }

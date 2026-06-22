@@ -10,16 +10,16 @@ use super::{
     editor_scm_diff_gutter_enabled, editor_scm_diff_minimap_enabled,
     editor_scm_diff_overview_enabled, editor_sticky_scroll_enabled,
     editor_sticky_scroll_max_line_count, editor_stop_rendering_line_after_for_mode,
-    editor_validation_decorations_enabled, editor_word_wrap_for_buffer,
-    folded_ranges_allowed_by_folding_ranges, line_number_width_for_min_chars,
-    occurrence_highlight_ranges_for_buffer, path_exists_cached, renderable_code_lenses,
-    renderable_git_blame_lines, renderable_inlay_hints, selection_highlight_ranges_for_buffer,
-    sort_code_lenses_by_position, unicode_highlight_allowed_characters,
-    unicode_highlight_allowed_locales,
+    editor_validation_decorations_enabled, editor_vim_search_matches_enabled,
+    editor_word_wrap_for_buffer, folded_ranges_allowed_by_folding_ranges,
+    line_number_width_for_min_chars, path_exists_cached, renderable_code_lenses,
+    renderable_git_blame_lines, renderable_inlay_hints, sort_code_lenses_by_position,
+    unicode_highlight_allowed_characters, unicode_highlight_allowed_locales,
 };
 use crate::{
     KuroyaApp,
     app_startup_context::AppStartupContext,
+    editor_vim_key_events::{vim_clear_searches_for_test, vim_set_last_search_for_test},
     folding::FoldedRange,
     large_file_mode::{
         LARGE_FILE_MODE_LINE_RENDER_CHAR_LIMIT, LARGE_FILE_MODE_MAX_BYTES,
@@ -29,13 +29,14 @@ use crate::{
     terminal::TerminalPane,
     transient_state::EditorImePreedit,
 };
+use eframe::egui::Color32;
 use kuroya_core::{
     DiffWordWrap, EditorAccessibilitySupport, EditorBracketPairGuideMode, EditorFoldingStrategy,
     EditorHighlightActiveIndentation, EditorLineDecorationsWidth, EditorLineNumbers,
-    EditorMatchBrackets, EditorOccurrencesHighlight, EditorRenderValidationDecorations,
-    EditorSettings, EditorWordWrap, EditorWordWrapOverride, GitBlameLine, GitChangeStage,
-    LanguageId, LspCodeLens, LspFoldingRange, LspInlayHint,
-    MAX_EDITOR_STICKY_SCROLL_MAX_LINE_COUNT, ScmDiffDecorations, Selection, TextBuffer, Workspace,
+    EditorMatchBrackets, EditorRenderValidationDecorations, EditorSettings, EditorWordWrap,
+    EditorWordWrapOverride, GitBlameLine, GitChangeStage, LanguageId, LspCodeLens, LspFoldingRange,
+    LspInlayHint, MAX_EDITOR_STICKY_SCROLL_MAX_LINE_COUNT, ScmDiffDecorations, TextBuffer,
+    ThemeSettings, Workspace,
 };
 use std::{
     cell::Cell,
@@ -206,6 +207,21 @@ fn pane_data_compare_actions_use_open_buffers_for_missing_paths() {
 }
 
 #[test]
+fn pane_data_selection_color_follows_custom_theme() {
+    let mut app = app_for_test(PathBuf::from("workspace"));
+    app.settings.theme = ThemeSettings {
+        selection: Some([12, 34, 56]),
+        ..ThemeSettings::default()
+    };
+    app.buffers
+        .push(TextBuffer::from_text(7, None, "selected text\n".to_owned()));
+
+    let data = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
+
+    assert_eq!(data.selection_bg_fill, Color32::from_rgb(12, 34, 56));
+}
+
+#[test]
 fn editor_accessibility_enabled_follows_support_mode() {
     assert!(editor_accessibility_enabled(
         EditorAccessibilitySupport::Auto
@@ -274,7 +290,6 @@ fn performance_mode_keeps_normal_editor_surface_before_hard_large_file_mode() {
         EditorHighlightActiveIndentation::Always
     );
     assert!(!data.find_matches.is_empty());
-    assert!(data.selection_highlight_ranges.is_empty());
     assert!(data.show_scm_diff_gutter);
     assert!(data.show_scm_diff_overview);
     assert!(data.show_scm_diff_minimap);
@@ -476,13 +491,9 @@ fn pane_data_clears_disabled_active_buffer_caches_in_large_file_mode() {
 
     let _ = app.find_matches_for_buffer_index(0);
     let _ = app
-        .editor_match_highlight_cache
-        .occurrence_highlight_ranges(&app.buffers[0], EditorOccurrencesHighlight::SingleFile);
-    let _ = app
         .editor_bracket_overlay_cache
         .bracket_matches(&app.buffers[0], EditorMatchBrackets::Always);
     assert_eq!(app.buffer_find_cache.cached_buffer_id_for_test(), Some(7));
-    assert!(app.editor_match_highlight_cache.contains_buffer_for_test(7));
     assert!(app.editor_bracket_overlay_cache.contains_buffer_for_test(7));
 
     let len_chars = app.buffers[0].len_chars();
@@ -495,27 +506,52 @@ fn pane_data_clears_disabled_active_buffer_caches_in_large_file_mode() {
     assert!(!data.syntax_highlighting);
     assert!(data.find_matches.is_empty());
     assert_eq!(app.buffer_find_cache.cached_buffer_id_for_test(), None);
-    assert!(!app.editor_match_highlight_cache.contains_buffer_for_test(7));
     assert!(!app.editor_bracket_overlay_cache.contains_buffer_for_test(7));
 }
 
 #[test]
-fn pane_data_defers_match_highlight_scans_after_text_input() {
+fn pane_data_uses_vim_search_matches() {
+    vim_clear_searches_for_test();
     let mut app = app_for_test(PathBuf::from("workspace"));
-    let mut buffer =
-        TextBuffer::from_text(7, None, "alpha beta alpha\nalpha beta alpha\n".to_owned());
-    buffer.set_single_cursor(2);
+    app.settings.vim_keybindings = true;
+    app.buffers.push(TextBuffer::from_text(
+        7,
+        None,
+        "alpha beta alpha".to_owned(),
+    ));
+    {
+        let buffer = app.buffer(7).expect("buffer should exist");
+        vim_set_last_search_for_test(buffer, "alpha", true, false);
+    }
+
+    let data = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
+
+    assert_eq!(data.find_matches, vec![0..5, 11..16]);
+
+    app.settings.vim_keybindings = false;
+    let disabled = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
+
+    assert!(disabled.find_matches.is_empty());
+    vim_clear_searches_for_test();
+}
+
+#[test]
+fn pane_data_keeps_normal_typing_unhighlighted() {
+    let mut app = app_for_test(PathBuf::from("workspace"));
+    let mut buffer = TextBuffer::from_text(7, None, "alpha beta alpha".to_owned());
+    buffer.set_selection(0, 5);
+    assert!(buffer.insert_text_with_auto_pairs("x"));
+    app.settings.vim_keybindings = false;
+    app.buffer_find_open = false;
+    app.document_highlights_path = None;
+    app.document_highlights.clear();
     app.buffers.push(buffer);
 
-    app.editor_defer_match_highlights_for_buffer = Some(7);
-    let deferred = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
+    let data = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
 
-    assert!(deferred.occurrence_highlight_ranges.is_empty());
-    assert!(deferred.selection_highlight_ranges.is_empty());
-    assert_eq!(app.editor_defer_match_highlights_for_buffer, None);
-
-    let refreshed = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
-    assert!(!refreshed.occurrence_highlight_ranges.is_empty());
+    assert_eq!(data.selections, [kuroya_core::Selection::caret(1)]);
+    assert!(data.find_matches.is_empty());
+    assert!(data.document_highlight_ranges.is_empty());
 }
 
 #[test]
@@ -707,6 +743,10 @@ fn large_file_mode_disables_live_find_and_diff_overview_work() {
     assert!(!editor_find_matches_enabled(false, false));
     assert!(!editor_find_matches_enabled(true, true));
 
+    assert!(editor_vim_search_matches_enabled(true, false));
+    assert!(!editor_vim_search_matches_enabled(false, false));
+    assert!(!editor_vim_search_matches_enabled(true, true));
+
     assert!(editor_diff_overview_ruler_enabled(true, false));
     assert!(!editor_diff_overview_ruler_enabled(false, false));
     assert!(!editor_diff_overview_ruler_enabled(true, true));
@@ -776,65 +816,6 @@ fn validation_decorations_follow_setting_readonly_and_large_file_mode() {
         false,
         true
     ));
-}
-
-#[test]
-fn occurrence_highlight_ranges_follow_word_under_cursor_setting() {
-    let mut buffer =
-        TextBuffer::from_text(1, None, "alpha beta alpha\nalphabet alpha\n".to_owned());
-    buffer.set_cursors([2]);
-
-    assert_eq!(
-        occurrence_highlight_ranges_for_buffer(&buffer, EditorOccurrencesHighlight::SingleFile),
-        vec![0..5, 11..16, 26..31]
-    );
-    assert_eq!(
-        occurrence_highlight_ranges_for_buffer(&buffer, EditorOccurrencesHighlight::MultiFile),
-        vec![0..5, 11..16, 26..31]
-    );
-    assert!(
-        occurrence_highlight_ranges_for_buffer(&buffer, EditorOccurrencesHighlight::Off).is_empty()
-    );
-
-    buffer.set_selections([Selection {
-        anchor: 0,
-        cursor: 5,
-    }]);
-    assert!(
-        occurrence_highlight_ranges_for_buffer(&buffer, EditorOccurrencesHighlight::SingleFile)
-            .is_empty()
-    );
-}
-
-#[test]
-fn selection_highlight_ranges_follow_selection_settings() {
-    let mut buffer =
-        TextBuffer::from_text(1, None, "alpha beta alpha\nalpha beta alpha\n".to_owned());
-    buffer.set_selections([Selection {
-        anchor: 0,
-        cursor: 5,
-    }]);
-
-    assert_eq!(
-        selection_highlight_ranges_for_buffer(&buffer, true, 200, false),
-        vec![11..16, 17..22, 28..33]
-    );
-    assert!(selection_highlight_ranges_for_buffer(&buffer, false, 200, false).is_empty());
-    assert!(selection_highlight_ranges_for_buffer(&buffer, true, 4, false).is_empty());
-    assert_eq!(
-        selection_highlight_ranges_for_buffer(&buffer, true, 0, false),
-        vec![11..16, 17..22, 28..33]
-    );
-
-    buffer.set_selections([Selection {
-        anchor: 0,
-        cursor: 17,
-    }]);
-    assert!(selection_highlight_ranges_for_buffer(&buffer, true, 200, false).is_empty());
-    assert_eq!(
-        selection_highlight_ranges_for_buffer(&buffer, true, 200, true),
-        vec![17..34]
-    );
 }
 
 #[test]

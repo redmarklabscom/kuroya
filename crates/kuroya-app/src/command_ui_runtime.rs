@@ -1,8 +1,8 @@
 use crate::{
     KuroyaApp,
+    editor_vim_key_events::EditorVimMode,
     panel_layout::cycle_panel_placement,
     path_display::{display_error_label_cow, display_path_label_cow},
-    theme::selected_theme_index_with_plugins,
     workspace_state::settings_path,
 };
 use kuroya_core::{Command, EditorFindSeedSearchStringFromSelection, TextBuffer};
@@ -49,15 +49,18 @@ impl KuroyaApp {
                 }
             }
             Command::ToggleKeybindingsPanel => {
+                if self.has_keybinding_capture_in_progress() && !self.cancel_keybinding_capture() {
+                    return true;
+                }
                 self.keybindings_open = !self.keybindings_open;
                 self.keybindings_query.clear();
                 self.keybindings_selected = 0;
                 self.keybinding_capture_command = None;
+                self.keybinding_escape_cancel = None;
             }
             Command::ToggleThemePicker => {
                 self.theme_picker_open = !self.theme_picker_open;
-                self.theme_picker_selected =
-                    selected_theme_index_with_plugins(&self.settings.theme, &self.plugin_themes);
+                self.theme_picker_selected = self.selected_theme_picker_index();
             }
             Command::CycleTheme => self.cycle_theme(),
             Command::ToggleMinimap => {
@@ -69,6 +72,29 @@ impl KuroyaApp {
                 self.settings.sticky_scroll = !self.settings.sticky_scroll;
                 self.settings_panel_draft.sticky_scroll = self.settings.sticky_scroll;
                 self.save_toggled_editor_setting("Sticky Scroll", self.settings.sticky_scroll);
+            }
+            Command::ToggleVimMode => {
+                let mut settings = self.settings.clone();
+                settings.vim_keybindings = !settings.vim_keybindings;
+                let enabled = settings.vim_keybindings;
+                match settings.save(&settings_path(&self.workspace.root)) {
+                    Ok(()) => {
+                        self.settings = settings;
+                        self.settings_panel_draft.vim_keybindings = enabled;
+                        self.editor_vim_mode = EditorVimMode::Normal;
+                        self.editor_vim_pending_key = None;
+                        self.editor_vim_last_char_find = None;
+                        self.editor_vim_unnamed_register = None;
+                        self.editor_vim_last_change = None;
+                        self.status = editor_setting_saved_status("Vim Mode", enabled);
+                        self.app_state_vim_keybindings = enabled;
+                        self.app_state_vim = self.settings.vim.clone();
+                        self.save_vim_toggle_app_state();
+                    }
+                    Err(error) => {
+                        self.status = editor_setting_not_saved_status("Vim Mode", error);
+                    }
+                }
             }
             Command::TrustWorkspace => self.trust_current_workspace(),
             Command::RevokeWorkspaceTrust => self.revoke_current_workspace_trust(),
@@ -199,6 +225,10 @@ impl KuroyaApp {
                 }
             }
             Command::OpenSourceControlInIntegratedTerminal => {
+                if !self.terminal.can_open_session() {
+                    self.status = "Terminal session limit reached".to_owned();
+                    return true;
+                }
                 let root = self.workspace.root.clone();
                 let status = source_control_terminal_opened_status(&root);
                 self.prepare_terminal_open_height();
@@ -292,21 +322,33 @@ impl KuroyaApp {
         self.source_control_stashes_open = false;
     }
 
-    fn save_toggled_editor_setting(&mut self, label: &str, enabled: bool) {
+    fn save_toggled_editor_setting(&mut self, label: &str, enabled: bool) -> bool {
         match self.settings.save(&settings_path(&self.workspace.root)) {
             Ok(()) => {
-                let state = if enabled { "enabled" } else { "disabled" };
-                let mut status = String::with_capacity(label.len() + 1 + state.len());
-                status.push_str(label);
-                status.push(' ');
-                status.push_str(state);
-                self.status = status;
+                self.status = editor_setting_saved_status(label, enabled);
+                true
             }
             Err(error) => {
                 self.status = editor_setting_save_failure_status(label, error);
+                false
             }
         }
     }
+
+    fn save_vim_toggle_app_state(&mut self) {
+        if let Err(error) = self.save_app_state() {
+            self.status = editor_setting_app_state_save_failure_status("Vim Mode", error);
+        }
+    }
+}
+
+fn editor_setting_saved_status(label: &str, enabled: bool) -> String {
+    let state = if enabled { "enabled" } else { "disabled" };
+    let mut status = String::with_capacity(label.len() + 1 + state.len());
+    status.push_str(label);
+    status.push(' ');
+    status.push_str(state);
+    status
 }
 
 fn source_control_terminal_opened_status(root: &Path) -> String {
@@ -324,6 +366,28 @@ fn editor_setting_save_failure_status(label: &str, error: impl Display) -> Strin
         label.len() + " changed, but settings save failed: ".len() + error.len(),
     );
     let _ = write!(status, "{label} changed, but settings save failed: {error}");
+    status
+}
+
+fn editor_setting_not_saved_status(label: &str, error: impl Display) -> String {
+    let error = error.to_string();
+    let error = display_error_label_cow(&error);
+    let mut status =
+        String::with_capacity("Could not save ".len() + label.len() + ": ".len() + error.len());
+    let _ = write!(status, "Could not save {label}: {error}");
+    status
+}
+
+fn editor_setting_app_state_save_failure_status(label: &str, error: impl Display) -> String {
+    let error = error.to_string();
+    let error = display_error_label_cow(&error);
+    let mut status = String::with_capacity(
+        label.len() + " changed, but app state save failed: ".len() + error.len(),
+    );
+    let _ = write!(
+        status,
+        "{label} changed, but app state save failed: {error}"
+    );
     status
 }
 
@@ -367,10 +431,16 @@ mod tests {
         app_startup_context::AppStartupContext,
         command_palette_overlay::CommandPaletteResultsCache,
         path_display::{DISPLAY_ERROR_LABEL_MAX_CHARS, DISPLAY_PATH_LABEL_MAX_CHARS},
+        persistence::AppState,
         terminal::TerminalPane,
+        workspace_tasks_runtime::workspace_task_fingerprint,
     };
-    use kuroya_core::{EditorSettings, Workspace};
+    use kuroya_core::{
+        EditorSettings, EditorVimKeyOverride, EditorVimSettings, Workspace, WorkspaceTask,
+        WorkspaceTaskKind,
+    };
     use std::{
+        collections::BTreeMap,
         path::PathBuf,
         time::{Instant, SystemTime, UNIX_EPOCH},
     };
@@ -399,6 +469,82 @@ mod tests {
         assert_eq!(app.status, "Sticky Scroll disabled");
         let saved = std::fs::read_to_string(settings_path(&root)).expect("settings should save");
         assert!(saved.contains("sticky_scroll = false"));
+
+        assert!(app.run_ui_command(&Command::ToggleVimMode));
+        assert!(app.settings.vim_keybindings);
+        assert!(app.settings_panel_draft.vim_keybindings);
+        assert_eq!(app.editor_vim_mode, EditorVimMode::Normal);
+        assert_eq!(app.editor_vim_pending_key, None);
+        assert_eq!(app.status, "Vim Mode enabled");
+        let saved = std::fs::read_to_string(settings_path(&root)).expect("settings should save");
+        assert!(saved.contains("vim_keybindings = true"));
+        let app_state =
+            std::fs::read_to_string(root.join("app-state.json")).expect("app state should save");
+        assert!(app_state.contains("\"vim_keybindings\": true"));
+    }
+
+    #[test]
+    fn toggle_vim_mode_preserves_custom_vim_app_state_config() {
+        let root = temp_root("vim-toggle-preserves-custom-config");
+        let settings = EditorSettings {
+            vim_keybindings: false,
+            vim: EditorVimSettings {
+                disabled_bindings: vec!["Q".to_owned()],
+                key_overrides: vec![EditorVimKeyOverride {
+                    before: "K".to_owned(),
+                    after: "0".to_owned(),
+                    command: None,
+                }],
+            },
+            ..EditorSettings::default()
+        };
+        let expected_vim = settings.vim.clone();
+        let mut app = app_for_test(root.clone(), settings);
+
+        assert!(app.run_ui_command(&Command::ToggleVimMode));
+
+        let app_state_json =
+            std::fs::read_to_string(root.join("app-state.json")).expect("app state should save");
+        let app_state: AppState =
+            serde_json::from_str(&app_state_json).expect("app state should parse");
+        assert_eq!(app_state.vim_keybindings, Some(true));
+        assert_eq!(app_state.vim, Some(expected_vim));
+    }
+
+    #[test]
+    fn toggle_vim_mode_survives_settings_reload() {
+        let root = temp_root("vim-toggle-survives-reload");
+        let settings = EditorSettings {
+            vim_keybindings: false,
+            vim: EditorVimSettings {
+                disabled_bindings: vec!["Q".to_owned()],
+                key_overrides: vec![EditorVimKeyOverride {
+                    before: "K".to_owned(),
+                    after: "0".to_owned(),
+                    command: None,
+                }],
+            },
+            ..EditorSettings::default()
+        };
+        let expected_vim = settings.vim.clone();
+        let mut app = app_for_test(root.clone(), settings);
+
+        assert!(app.run_ui_command(&Command::ToggleVimMode));
+        app.settings.vim_keybindings = false;
+        app.settings.vim.disabled_bindings.clear();
+
+        app.reload_settings();
+
+        assert!(app.settings.vim_keybindings);
+        assert_eq!(app.settings.vim, expected_vim);
+        assert_eq!(
+            app.settings_panel_draft.vim_keybindings,
+            app.settings.vim_keybindings
+        );
+        assert_eq!(app.settings_panel_draft.vim, app.settings.vim);
+        assert!(app.app_state_vim_keybindings);
+        assert_eq!(app.app_state_vim, app.settings.vim);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -420,6 +566,57 @@ mod tests {
         assert!(!app.settings_panel_draft.minimap);
         assert_eq!(app.settings.font_size, 14.0);
         assert_eq!(app.settings_panel_draft.font_size, 19.0);
+
+        assert!(app.run_ui_command(&Command::ToggleVimMode));
+
+        assert!(app.settings.vim_keybindings);
+        assert!(app.settings_panel_draft.vim_keybindings);
+        assert_eq!(app.settings.font_size, 14.0);
+        assert_eq!(app.settings_panel_draft.font_size, 19.0);
+    }
+
+    #[test]
+    fn toggle_vim_mode_does_not_apply_or_save_app_state_when_settings_save_fails() {
+        let root = temp_root("vim-toggle-settings-save-fail");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".kuroya"), "not a settings directory").unwrap();
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        let app_state_path = root.join("app-state.json");
+
+        assert!(app.run_ui_command(&Command::ToggleVimMode));
+
+        assert!(!app.settings.vim_keybindings);
+        assert!(!app.settings_panel_draft.vim_keybindings);
+        assert!(app.status.starts_with("Could not save Vim Mode:"));
+        assert!(!app_state_path.exists());
+        app.save_app_state().unwrap();
+        let app_state = std::fs::read_to_string(&app_state_path).unwrap();
+        assert!(app_state.contains("\"vim_keybindings\": false"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn toggle_vim_mode_reports_app_state_save_failure_after_settings_save() {
+        let root = temp_root("vim-toggle-app-state-save-fail");
+        std::fs::create_dir_all(&root).unwrap();
+        let blocked_parent = root.join("blocked-app-state");
+        std::fs::write(&blocked_parent, "not a directory").unwrap();
+        let app_state_path = blocked_parent.join("state.json");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        app.app_state_path_override = Some(app_state_path.clone());
+
+        assert!(app.run_ui_command(&Command::ToggleVimMode));
+
+        assert!(app.settings.vim_keybindings);
+        assert!(app.app_state_vim_keybindings);
+        let saved = std::fs::read_to_string(settings_path(&root)).unwrap();
+        assert!(saved.contains("vim_keybindings = true"));
+        assert!(
+            app.status
+                .starts_with("Vim Mode changed, but app state save failed:")
+        );
+        assert!(!app_state_path.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -467,6 +664,23 @@ mod tests {
         assert_eq!(
             editor_setting_save_failure_status("Sticky Scroll", "\n\u{202e}\u{0007}"),
             "Sticky Scroll changed, but settings save failed: unknown error"
+        );
+    }
+
+    #[test]
+    fn editor_setting_not_saved_status_reports_unchanged_setting() {
+        let status = editor_setting_not_saved_status(
+            "Vim Mode",
+            format!("first line\n{}\u{202e}tail", "error-detail-".repeat(24)),
+        );
+
+        assert!(status.starts_with("Could not save Vim Mode: first line "));
+        assert!(!status.contains('\n'));
+        assert!(!status.contains('\u{202e}'));
+        assert!(status.contains("..."));
+        assert!(
+            status.chars().count()
+                <= "Could not save Vim Mode: ".chars().count() + DISPLAY_ERROR_LABEL_MAX_CHARS
         );
     }
 
@@ -568,9 +782,63 @@ mod tests {
         assert!(app.terminal_open_height_pending);
     }
 
+    #[test]
+    fn source_control_terminal_open_at_session_cap_does_not_schedule_height() {
+        let root = temp_root("source-control-terminal-session-cap");
+        let settings = EditorSettings {
+            git_enabled: true,
+            ..EditorSettings::default()
+        };
+        let mut app = app_for_test(root, settings);
+        fill_terminal_sessions_to_cap(&mut app);
+
+        assert!(app.run_ui_command(&Command::OpenSourceControlInIntegratedTerminal));
+
+        assert_eq!(app.status, "Terminal session limit reached");
+        assert!(!app.terminal.visible);
+        assert!(!app.terminal_open_height_pending);
+    }
+
+    #[test]
+    fn workspace_task_run_at_session_cap_does_not_schedule_height() {
+        let root = temp_root("workspace-task-session-cap");
+        let mut app = app_for_test(root, EditorSettings::default());
+        app.workspace_trusted = true;
+        let task = WorkspaceTask {
+            name: "Test All".to_owned(),
+            command: "cargo".to_owned(),
+            args: vec!["test".to_owned()],
+            cwd: None,
+            env: BTreeMap::new(),
+            kind: WorkspaceTaskKind::Test,
+            default: true,
+        };
+        let fingerprint = workspace_task_fingerprint(&task);
+        app.workspace_tasks = vec![task];
+        fill_terminal_sessions_to_cap(&mut app);
+
+        app.run_workspace_task_snapshot(0, fingerprint);
+
+        assert_eq!(app.status, "Terminal session limit reached");
+        assert!(app.running_workspace_tasks.is_empty());
+        assert!(!app.terminal.visible);
+        assert!(!app.terminal_open_height_pending);
+    }
+
+    fn fill_terminal_sessions_to_cap(app: &mut KuroyaApp) {
+        let mut session_id = 1;
+        while app.terminal.can_open_session() {
+            let _rx_command = app.terminal.add_process_session_for_test(session_id);
+            session_id += 1;
+        }
+        app.terminal.set_visible(false);
+        app.terminal_open_height_pending = false;
+    }
+
     fn app_for_test(root: PathBuf, settings: EditorSettings) -> KuroyaApp {
         let (tx, rx) = crate::ui_event_channel::ui_event_channel();
-        KuroyaApp::from_startup_context(AppStartupContext {
+        let app_state_path = root.join("app-state.json");
+        let mut app = KuroyaApp::from_startup_context(AppStartupContext {
             runtime: Runtime::new().expect("test runtime"),
             tx,
             rx,
@@ -587,7 +855,9 @@ mod tests {
             trusted_workspaces: vec![root],
             now: Instant::now(),
             startup_timings: Vec::new(),
-        })
+        });
+        app.app_state_path_override = Some(app_state_path);
+        app
     }
 
     fn temp_root(name: &str) -> PathBuf {

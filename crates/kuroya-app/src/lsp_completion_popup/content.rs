@@ -40,12 +40,14 @@ impl KuroyaApp {
             self.settings.suggest_line_height,
             ui.spacing().interact_size.y,
         );
+        let navigation_page_step =
+            selection_page_step(completion_row_height, ui.available_height());
         let navigation_changed = ui.input(|input| {
             handle_list_navigation_keys(
                 input,
                 &mut self.completion_selected,
                 item_count,
-                selection_page_step(completion_row_height, ui.available_height()),
+                navigation_page_step,
             )
         });
         let selection_changed = selection_was_normalized || navigation_changed;
@@ -82,6 +84,7 @@ impl KuroyaApp {
                     self.completion_selected,
                     self.settings.accept_suggestion_on_enter,
                     tab_accepts,
+                    ui.visuals().weak_text_color(),
                 );
                 ui.label(status_label);
             });
@@ -113,7 +116,7 @@ impl KuroyaApp {
             ui.label(
                 RichText::new(completion_target_label(self))
                     .small()
-                    .color(Color32::from_rgb(126, 136, 150)),
+                    .color(ui.visuals().weak_text_color()),
             );
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 if popup_button(ui, "Close", PopupButtonKind::Secondary).clicked() {
@@ -171,13 +174,14 @@ fn cached_completion_status_bar_label(
     selected: usize,
     enter_accepts: bool,
     tab_accepts: bool,
+    text_color: Color32,
 ) -> Arc<RichText> {
     ui.ctx().data_mut(|data| {
         data.get_temp_mut_or_default::<CompletionPopupContentCache>(Id::new(
             COMPLETION_POPUP_CONTENT_CACHE_ID,
         ))
         .status_bar
-        .label(count, selected, enter_accepts, tab_accepts)
+        .label(count, selected, enter_accepts, tab_accepts, text_color)
     })
 }
 
@@ -199,12 +203,14 @@ impl CompletionStatusBarLabelCache {
         selected: usize,
         enter_accepts: bool,
         tab_accepts: bool,
+        text_color: Color32,
     ) -> Arc<RichText> {
         let key = CompletionStatusBarLabelKey {
             count,
             selected,
             enter_accepts,
             tab_accepts,
+            text_color: color_cache_key(text_color),
         };
         if self.key == Some(key)
             && let Some(label) = &self.label
@@ -220,7 +226,7 @@ impl CompletionStatusBarLabelCache {
                 tab_accepts,
             ))
             .small()
-            .color(Color32::from_rgb(126, 136, 150)),
+            .color(text_color),
         );
         self.key = Some(key);
         self.label = Some(Arc::clone(&label));
@@ -234,6 +240,11 @@ struct CompletionStatusBarLabelKey {
     selected: usize,
     enter_accepts: bool,
     tab_accepts: bool,
+    text_color: [u8; 4],
+}
+
+fn color_cache_key(color: Color32) -> [u8; 4] {
+    [color.r(), color.g(), color.b(), color.a()]
 }
 
 fn completion_item_needs_preview_resolve_display(item: &LspCompletionItem) -> bool {
@@ -380,7 +391,7 @@ mod tests {
     };
     use crate::lsp_completion_resolve::CompletionPreviewResolveKey;
     use crate::path_display::DISPLAY_PATH_LABEL_MAX_CHARS;
-    use eframe::egui::{Event, ImeEvent};
+    use eframe::egui::{Color32, Event, ImeEvent};
     use kuroya_core::{EditorSettings, EditorTabCompletion, LspCompletionItem};
     use std::{path::PathBuf, sync::Arc};
 
@@ -423,9 +434,9 @@ mod tests {
     fn completion_status_bar_label_cache_reuses_unchanged_status_display() {
         let mut cache = CompletionStatusBarLabelCache::default();
 
-        let first = cache.label(3, 1, true, true);
-        let second = cache.label(3, 1, true, true);
-        let changed_selection = cache.label(3, 2, true, true);
+        let first = cache.label(3, 1, true, true, Color32::WHITE);
+        let second = cache.label(3, 1, true, true, Color32::WHITE);
+        let changed_selection = cache.label(3, 2, true, true, Color32::WHITE);
 
         assert!(Arc::ptr_eq(&first, &second));
         assert!(!Arc::ptr_eq(&first, &changed_selection));

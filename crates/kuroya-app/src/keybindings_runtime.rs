@@ -41,15 +41,15 @@ pub(crate) fn malformed_keybinding_chord_rejection_reason(chord: &str) -> Option
 }
 
 impl KuroyaApp {
-    pub(crate) fn save_keybinding_chord(&mut self, command: Command, chord: String) {
+    pub(crate) fn save_keybinding_chord(&mut self, command: Command, chord: String) -> bool {
         let label = command_label(&command);
         if let Some(reason) = malformed_keybinding_chord_rejection_reason(&chord) {
             self.status = keybinding_rejection_status(&label, reason);
-            return;
+            return false;
         }
         let Some(chord) = normalize_key_chord(&chord) else {
             self.status = keybinding_rejection_status(&label, "That shortcut is not supported");
-            return;
+            return false;
         };
         let mut settings = self.settings.clone();
         let stale_count = prune_stale_keybinding_assignments(&mut settings.keymap.bindings);
@@ -58,19 +58,20 @@ impl KuroyaApp {
         let conflict =
             assign_normalized_keybinding_chord(&mut settings.keymap.bindings, command, chord);
         let conflict_label = conflict.as_ref().map(command_label);
+        if let Some(conflict_label) = conflict_label {
+            self.status = keybinding_conflict_status(&label, &status_chord, &conflict_label);
+            return false;
+        }
 
         match settings.save(&settings_path(&self.workspace.root)) {
             Ok(()) => {
                 self.settings = settings;
-                self.status = keybinding_bound_status(
-                    &label,
-                    &status_chord,
-                    conflict_label.as_deref(),
-                    stale_count,
-                );
+                self.status = keybinding_bound_status(&label, &status_chord, stale_count);
+                true
             }
             Err(error) => {
                 self.status = keybinding_change_save_failed_status(error);
+                false
             }
         }
     }
@@ -78,7 +79,9 @@ impl KuroyaApp {
     pub(crate) fn remove_keybinding_for_command(&mut self, command: Command) {
         let label = command_label(&command);
         let mut settings = self.settings.clone();
-        if !remove_keybinding_assignment(&mut settings.keymap.bindings, &command) {
+        let removed = remove_keybinding_assignment(&mut settings.keymap.bindings, &command);
+        let stale_count = prune_stale_keybinding_assignments(&mut settings.keymap.bindings);
+        if !removed && stale_count == 0 {
             self.status = keybinding_no_shortcut_status(&label);
             return;
         }
@@ -86,7 +89,11 @@ impl KuroyaApp {
         match settings.save(&settings_path(&self.workspace.root)) {
             Ok(()) => {
                 self.settings = settings;
-                self.status = keybinding_removed_status(&label);
+                self.status = if removed {
+                    keybinding_removed_status(&label, stale_count)
+                } else {
+                    keybinding_no_shortcut_status_with_cleanup(&label, stale_count)
+                };
             }
             Err(error) => {
                 self.status = keybinding_remove_save_failed_status(error);
@@ -95,7 +102,7 @@ impl KuroyaApp {
     }
 }
 
-fn prune_stale_keybinding_assignments(bindings: &mut Vec<KeyBinding>) -> usize {
+pub(crate) fn prune_stale_keybinding_assignments(bindings: &mut Vec<KeyBinding>) -> usize {
     let mut next = Vec::with_capacity(bindings.len());
     let mut stale_count = 0usize;
 
@@ -148,34 +155,33 @@ fn keybinding_rejection_status(command_label: &str, reason: &str) -> String {
     status
 }
 
-fn keybinding_bound_status(
-    command_label: &str,
-    chord: &str,
-    conflict_label: Option<&str>,
-    stale_count: usize,
-) -> String {
+fn keybinding_conflict_status(command_label: &str, chord: &str, conflict_label: &str) -> String {
     let label = keybinding_status_label_cow(command_label);
     let chord = keybinding_status_chord_cow(chord);
-    let mut status = if let Some(conflict_label) = conflict_label {
-        let conflict_label = keybinding_status_label_cow(conflict_label);
-        let mut status = String::with_capacity(
-            "Bound  to , replacing ".len() + label.len() + chord.len() + conflict_label.len(),
-        );
-        status.push_str("Bound ");
-        status.push_str(&label);
-        status.push_str(" to ");
-        status.push_str(&chord);
-        status.push_str(", replacing ");
-        status.push_str(&conflict_label);
-        status
-    } else {
-        let mut status = String::with_capacity("Bound  to ".len() + label.len() + chord.len());
-        status.push_str("Bound ");
-        status.push_str(&label);
-        status.push_str(" to ");
-        status.push_str(&chord);
-        status
-    };
+    let conflict_label = keybinding_status_label_cow(conflict_label);
+    let mut status = String::with_capacity(
+        "Could not bind  to : already used by ".len()
+            + label.len()
+            + chord.len()
+            + conflict_label.len(),
+    );
+    status.push_str("Could not bind ");
+    status.push_str(&label);
+    status.push_str(" to ");
+    status.push_str(&chord);
+    status.push_str(": already used by ");
+    status.push_str(&conflict_label);
+    status
+}
+
+fn keybinding_bound_status(command_label: &str, chord: &str, stale_count: usize) -> String {
+    let label = keybinding_status_label_cow(command_label);
+    let chord = keybinding_status_chord_cow(chord);
+    let mut status = String::with_capacity("Bound  to ".len() + label.len() + chord.len());
+    status.push_str("Bound ");
+    status.push_str(&label);
+    status.push_str(" to ");
+    status.push_str(&chord);
     push_stale_keybinding_cleanup_suffix(&mut status, stale_count);
     status
 }
@@ -188,11 +194,18 @@ fn keybinding_no_shortcut_status(command_label: &str) -> String {
     status
 }
 
-fn keybinding_removed_status(command_label: &str) -> String {
+fn keybinding_no_shortcut_status_with_cleanup(command_label: &str, stale_count: usize) -> String {
+    let mut status = keybinding_no_shortcut_status(command_label);
+    push_stale_keybinding_cleanup_suffix(&mut status, stale_count);
+    status
+}
+
+fn keybinding_removed_status(command_label: &str, stale_count: usize) -> String {
     let label = keybinding_status_label_cow(command_label);
     let mut status = String::with_capacity("Removed shortcut for ".len() + label.len());
     status.push_str("Removed shortcut for ");
     status.push_str(&label);
+    push_stale_keybinding_cleanup_suffix(&mut status, stale_count);
     status
 }
 
@@ -212,6 +225,23 @@ fn keybinding_remove_save_failed_status(error: impl std::fmt::Display) -> String
     let mut status =
         String::with_capacity("Could not save keybinding removal: ".len() + error.len());
     status.push_str("Could not save keybinding removal: ");
+    status.push_str(&error);
+    status
+}
+
+pub(crate) fn keybinding_cancel_save_failed_status(
+    command_label: &str,
+    error: impl std::fmt::Display,
+) -> String {
+    let label = keybinding_status_label_cow(command_label);
+    let error = error.to_string();
+    let error = display_error_label_cow(&error);
+    let mut status = String::with_capacity(
+        "Could not cancel shortcut capture for ".len() + label.len() + ": ".len() + error.len(),
+    );
+    status.push_str("Could not cancel shortcut capture for ");
+    status.push_str(&label);
+    status.push_str(": ");
     status.push_str(&error);
     status
 }
@@ -247,22 +277,37 @@ mod tests {
                 "x".repeat(240)
             ),
             &format!("Ctrl+Shift+{}\n\u{202e}", "K".repeat(120)),
-            Some(&format!(
-                "Run Plugin Command conflict\u{202e}:{}",
-                "y".repeat(240)
-            )),
             2,
         );
 
         assert_status_text_is_safe(&status);
-        assert!(status.contains("replacing"));
         assert!(status.contains("; cleaned 2 stale shortcuts"));
         assert!(status.contains("..."));
         assert!(
             status.chars().count()
-                <= "Bound  to , replacing ; cleaned 2 stale shortcuts"
-                    .chars()
-                    .count()
+                <= "Bound  to ; cleaned 2 stale shortcuts".chars().count()
+                    + KEYBINDING_STATUS_LABEL_MAX_CHARS * 2
+                    + KEYBINDING_STATUS_CHORD_MAX_CHARS
+        );
+    }
+
+    #[test]
+    fn keybinding_conflict_status_sanitizes_and_bounds_display_labels() {
+        let status = keybinding_conflict_status(
+            &format!(
+                "Run Plugin Command plugin\n{}:save\u{202e}",
+                "x".repeat(240)
+            ),
+            &format!("Ctrl+Shift+{}\n\u{202e}", "K".repeat(120)),
+            &format!("Run Plugin Command conflict\u{202e}:{}", "y".repeat(240)),
+        );
+
+        assert_status_text_is_safe(&status);
+        assert!(status.contains("already used by"));
+        assert!(status.contains("..."));
+        assert!(
+            status.chars().count()
+                <= "Could not bind  to : already used by ".chars().count()
                     + KEYBINDING_STATUS_LABEL_MAX_CHARS * 2
                     + KEYBINDING_STATUS_CHORD_MAX_CHARS
         );
@@ -276,7 +321,7 @@ mod tests {
         );
 
         let no_shortcut = keybinding_no_shortcut_status(&label);
-        let removed = keybinding_removed_status(&label);
+        let removed = keybinding_removed_status(&label, 0);
 
         assert_status_text_is_safe(&no_shortcut);
         assert_status_text_is_safe(&removed);
@@ -298,11 +343,14 @@ mod tests {
 
         let changed = keybinding_change_save_failed_status(&error);
         let removed = keybinding_remove_save_failed_status(&error);
+        let canceled = keybinding_cancel_save_failed_status("Undo", &error);
 
         assert_status_text_is_safe(&changed);
         assert_status_text_is_safe(&removed);
+        assert_status_text_is_safe(&canceled);
         assert!(changed.contains("..."));
         assert!(removed.contains("..."));
+        assert!(canceled.contains("..."));
         assert!(
             changed.chars().count()
                 <= "Could not save keybinding change: ".chars().count()
@@ -311,6 +359,13 @@ mod tests {
         assert!(
             removed.chars().count()
                 <= "Could not save keybinding removal: ".chars().count()
+                    + DISPLAY_ERROR_LABEL_MAX_CHARS
+        );
+        assert!(
+            canceled.chars().count()
+                <= "Could not cancel shortcut capture for Undo: "
+                    .chars()
+                    .count()
                     + DISPLAY_ERROR_LABEL_MAX_CHARS
         );
     }
@@ -446,23 +501,23 @@ mod tests {
 
         let command_label = "Run\nCommand\u{202e}";
         let chord = "Ctrl+K\n\u{2066}";
-        let conflict_label = "Open\nFile\u{202e}";
         let label = keybinding_status_label_cow(command_label);
         let status_chord = keybinding_status_chord_cow(chord);
-        let conflict = keybinding_status_label_cow(conflict_label);
 
         assert_eq!(
             keybinding_rejection_status(command_label, "That shortcut is not supported"),
             format!("Could not bind {label}: That shortcut is not supported")
         );
         assert_eq!(
-            keybinding_bound_status(command_label, chord, Some(conflict_label), 2),
-            format!(
-                "Bound {label} to {status_chord}, replacing {conflict}; cleaned 2 stale shortcuts"
-            )
+            keybinding_bound_status(command_label, chord, 2),
+            format!("Bound {label} to {status_chord}; cleaned 2 stale shortcuts")
         );
         assert_eq!(
-            keybinding_bound_status(command_label, chord, None, 0),
+            keybinding_conflict_status(command_label, chord, "Open\nFile\u{202e}"),
+            format!("Could not bind {label} to {status_chord}: already used by Open File")
+        );
+        assert_eq!(
+            keybinding_bound_status(command_label, chord, 0),
             format!("Bound {label} to {status_chord}")
         );
         assert_eq!(
@@ -470,8 +525,12 @@ mod tests {
             format!("{label} has no shortcut")
         );
         assert_eq!(
-            keybinding_removed_status(command_label),
+            keybinding_removed_status(command_label, 0),
             format!("Removed shortcut for {label}")
+        );
+        assert_eq!(
+            keybinding_removed_status(command_label, 1),
+            format!("Removed shortcut for {label}; cleaned 1 stale shortcut")
         );
     }
 
@@ -479,8 +538,9 @@ mod tests {
     fn malformed_keybinding_chord_rejects_parsed_but_unsupported_keys() {
         assert_eq!(
             malformed_keybinding_chord_rejection_reason("Ctrl+Escape"),
-            Some("That shortcut is not supported")
+            None
         );
+        assert_eq!(malformed_keybinding_chord_rejection_reason("Escape"), None);
         assert_eq!(
             malformed_keybinding_chord_rejection_reason("Ctrl+Unknown"),
             Some("That shortcut is not supported")

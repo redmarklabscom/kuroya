@@ -2,16 +2,16 @@ use crate::{
     KuroyaApp,
     lsp_lifecycle::{
         background_language_block_reason, lsp_lifecycle_target_for_buffer,
-        lsp_lifecycle_targets_for_buffers,
+        lsp_lifecycle_targets_for_buffers, lsp_server_config_for_buffer,
     },
     lsp_runtime::{
         LSP_SYMBOL_REFRESH_DEBOUNCE, lsp_command_queue_failed_status,
-        take_due_lsp_symbol_refresh_ids,
+        lsp_server_configs_for_settings, take_due_lsp_symbol_refresh_ids,
     },
     lsp_text_positions::lsp_line_content_utf16_len,
     path_display::display_path_label_cow,
 };
-use kuroya_core::{BufferId, LanguageId, TextBuffer, TextSnapshot};
+use kuroya_core::{BufferId, TextBuffer, TextSnapshot};
 use std::{
     borrow::Cow,
     collections::HashSet,
@@ -97,8 +97,11 @@ impl KuroyaApp {
         let Some(buffer) = self.buffer(id) else {
             return;
         };
+        let lsp_configs = lsp_server_configs_for_settings(&self.settings);
         let Some((key, path)) = lsp_lifecycle_target_for_buffer(
             buffer,
+            &lsp_configs,
+            &self.plugin_languages,
             &self.lossy_decoded_buffers,
             &self.binary_preview_buffers,
         ) else {
@@ -121,6 +124,8 @@ impl KuroyaApp {
     pub(crate) fn notify_lsp_close_all(&mut self) {
         for (key, path) in lsp_lifecycle_targets_for_buffers(
             &self.buffers,
+            &lsp_server_configs_for_settings(&self.settings),
+            &self.plugin_languages,
             &self.lossy_decoded_buffers,
             &self.binary_preview_buffers,
         ) {
@@ -247,7 +252,7 @@ impl KuroyaApp {
         queued
     }
 
-    fn lsp_document_sync_target(&self, id: BufferId) -> Option<(PathBuf, LanguageId, u64)> {
+    fn lsp_document_sync_target(&self, id: BufferId) -> Option<(PathBuf, String, u64)> {
         let buffer = self.buffer(id)?;
         if background_language_block_reason(
             id,
@@ -259,7 +264,14 @@ impl KuroyaApp {
         {
             return None;
         }
-        Some((buffer.path()?.clone(), buffer.language(), buffer.version()))
+        let lsp_configs = lsp_server_configs_for_settings(&self.settings);
+        let (_, language) =
+            lsp_server_config_for_buffer(&lsp_configs, &self.plugin_languages, buffer)?;
+        Some((
+            buffer.path()?.clone(),
+            language.into_owned(),
+            buffer.version(),
+        ))
     }
 
     fn lsp_text_snapshot_for_version(&self, id: BufferId, version: u64) -> Option<TextSnapshot> {

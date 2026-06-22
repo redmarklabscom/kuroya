@@ -205,14 +205,6 @@ fn partial_settings_toml_uses_defaults() {
     );
     assert!(settings.inline_suggest_experimental_empty_response_information);
     assert!(!settings.inline_completions_accessibility_verbose);
-    assert_eq!(
-        settings.occurrences_highlight,
-        EditorOccurrencesHighlight::SingleFile
-    );
-    assert_eq!(
-        settings.occurrences_highlight_delay_ms,
-        DEFAULT_OCCURRENCES_HIGHLIGHT_DELAY_MS
-    );
     assert_eq!(settings.lightbulb, EditorLightbulbMode::OnCode);
     assert_eq!(
         settings.render_validation_decorations,
@@ -523,12 +515,6 @@ fn partial_settings_toml_uses_defaults() {
         EditorRenderLineHighlight::default()
     );
     assert!(!settings.render_line_highlight_only_when_focus);
-    assert!(settings.selection_highlight);
-    assert_eq!(
-        settings.selection_highlight_max_length,
-        DEFAULT_EDITOR_SELECTION_HIGHLIGHT_MAX_LENGTH
-    );
-    assert!(!settings.selection_highlight_multiline);
     assert!(settings.smart_select_select_leading_and_trailing_whitespace);
     assert!(settings.smart_select_select_subwords);
     assert_eq!(
@@ -1033,16 +1019,76 @@ fn partial_settings_toml_uses_defaults() {
 }
 
 #[test]
-fn built_in_themes_are_named_and_cyclable() {
-    let names = ThemeSettings::built_in_names();
-    assert!(names.contains(&"Matte Dark".to_owned()));
-    assert!(names.contains(&"Soft Light".to_owned()));
+fn legacy_selection_highlight_settings_are_ignored() {
+    let settings: EditorSettings = toml::from_str(
+        "selection_highlight = false\n\
+         selection_highlight_max_length = 12\n\
+         selection_highlight_multiline = true\n\
+         occurrences_highlight = \"multiFile\"\n\
+         occurrences_highlight_delay_ms = 175\n\
+         render_line_highlight_only_when_focus = true\n",
+    )
+    .expect("legacy highlight settings should not block loading");
 
-    let next = ThemeSettings::next_built_in_after("Matte Dark");
-    assert_ne!(next.name, "Matte Dark");
+    assert!(settings.render_line_highlight_only_when_focus);
+}
+
+#[test]
+fn zed_style_vim_mode_setting_alias_enables_vim_keybindings() {
+    let settings: EditorSettings =
+        toml::from_str("vim_mode = true\n").expect("vim_mode alias should load");
+
+    assert!(settings.vim_keybindings);
+}
+
+#[test]
+fn built_in_themes_are_named_and_cyclable() {
+    let expected_names: Vec<String> = [
+        "Matte Dark",
+        "Graphite",
+        "Carbon Blue",
+        "Soft Light",
+        "Midnight Teal",
+        "Forest Dusk",
+        "Plum Dusk",
+        "Warm Paper",
+        "Clear Day",
+        "Sage Light",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+
+    let names = ThemeSettings::built_in_names();
+    assert_eq!(names, expected_names);
+
+    let mut unique_names = std::collections::HashSet::new();
+    for name in &names {
+        assert!(
+            unique_names.insert(name.to_ascii_lowercase()),
+            "duplicate theme name: {name}"
+        );
+        let theme = ThemeSettings::built_in_by_name(name).expect("theme name should resolve");
+        assert_eq!(&theme.name, name);
+        assert_eq!(
+            ThemeSettings::built_in_by_name(&name.to_ascii_uppercase()).as_ref(),
+            Some(&theme)
+        );
+    }
+
+    for pair in names.windows(2) {
+        assert_eq!(
+            ThemeSettings::next_built_in_after(&pair[0]).name,
+            pair[1].as_str()
+        );
+    }
     assert_eq!(
-        ThemeSettings::built_in_by_name(&next.name).as_ref(),
-        Some(&next)
+        ThemeSettings::next_built_in_after(names.last().unwrap()).name,
+        names[0].as_str()
+    );
+    assert_eq!(
+        ThemeSettings::next_built_in_after("Custom").name,
+        names[0].as_str()
     );
 }
 
@@ -1071,6 +1117,70 @@ fn settings_save_replaces_existing_file_without_temp_files() {
             .contains(&format!("schema_version = {SETTINGS_SCHEMA_VERSION}"))
     );
     assert_no_setting_temps(&path);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn settings_save_and_reload_preserves_enabled_vim_settings() {
+    let path = temp_settings_path("vim-roundtrip");
+    let root = path.parent().unwrap().parent().unwrap().to_path_buf();
+    let settings = EditorSettings {
+        vim_keybindings: true,
+        vim: EditorVimSettings {
+            disabled_bindings: vec!["Q".to_owned(), "<C-n>".to_owned()],
+            key_overrides: vec![
+                EditorVimKeyOverride {
+                    before: "H".to_owned(),
+                    after: "0".to_owned(),
+                    command: None,
+                },
+                EditorVimKeyOverride {
+                    before: "<Home>".to_owned(),
+                    after: "<C-r>".to_owned(),
+                    command: None,
+                },
+                EditorVimKeyOverride {
+                    before: "K".to_owned(),
+                    after: String::new(),
+                    command: Some(Command::RequestHover),
+                },
+            ],
+        },
+        ..EditorSettings::default()
+    };
+
+    settings.save(&path).unwrap();
+
+    let loaded = EditorSettings::load_or_create(&path).unwrap();
+    assert_eq!(loaded.vim_keybindings, settings.vim_keybindings);
+    assert_eq!(loaded.vim, settings.vim);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn settings_save_and_reload_preserves_disabled_vim_mode_with_custom_rows() {
+    let path = temp_settings_path("vim-disabled-roundtrip");
+    let root = path.parent().unwrap().parent().unwrap().to_path_buf();
+    let settings = EditorSettings {
+        vim_keybindings: false,
+        vim: EditorVimSettings {
+            disabled_bindings: vec!["Q".to_owned()],
+            key_overrides: vec![EditorVimKeyOverride {
+                before: "K".to_owned(),
+                after: String::new(),
+                command: Some(Command::RequestHover),
+            }],
+        },
+        ..EditorSettings::default()
+    };
+
+    settings.save(&path).unwrap();
+
+    let loaded = EditorSettings::load_or_create(&path).unwrap();
+    assert!(!loaded.vim_keybindings);
+    assert_eq!(loaded.vim, settings.vim);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1353,6 +1463,10 @@ fn settings_parse_sanitizes_numeric_bounds_lists_maps_and_display_text() {
         .map(|index| format!(r#"" hook-{index} " = " warning\u202e ""#))
         .collect::<Vec<_>>()
         .join(", ");
+    let theme_paths = (0..=SETTINGS_LIST_MAX_ITEMS)
+        .map(|index| format!(r#"" theme-{index}.toml\u202e ""#))
+        .collect::<Vec<_>>()
+        .join(", ");
     let text = format!(
         r#"
                 font_size = 1000.0
@@ -1366,6 +1480,8 @@ fn settings_parse_sanitizes_numeric_bounds_lists_maps_and_display_text() {
                 scm_input_max_line_count = 1
                 git_checkout_type = ["local", "local", "remote"]
                 word_segmenter_locales = [{locales}]
+                custom_theme_paths = [{theme_paths}]
+                active_custom_theme_path = " theme-1.toml "
                 unicode_highlight_allowed_locales = {{ {locale_map} }}
                 git_diagnostics_commit_hook_sources = {{ {hook_sources} }}
             "#
@@ -1399,6 +1515,11 @@ fn settings_parse_sanitizes_numeric_bounds_lists_maps_and_display_text() {
         settings.word_segmenter_locales.len(),
         SETTINGS_LIST_MAX_ITEMS
     );
+    assert_eq!(settings.custom_theme_paths.len(), SETTINGS_LIST_MAX_ITEMS);
+    assert_eq!(
+        settings.active_custom_theme_path.as_deref(),
+        Some("theme-1.toml")
+    );
     assert!(
         settings
             .word_segmenter_locales
@@ -1419,6 +1540,21 @@ fn settings_parse_sanitizes_numeric_bounds_lists_maps_and_display_text() {
             .values()
             .all(|value| !value.chars().any(is_settings_format_control))
     );
+}
+
+#[test]
+fn settings_parse_clears_stale_active_custom_theme_path() {
+    let (settings, should_resave) = parse_settings_text(
+        r#"
+            custom_theme_paths = ["theme-a.toml"]
+            active_custom_theme_path = "theme-missing.toml"
+        "#,
+    )
+    .unwrap();
+
+    assert!(should_resave);
+    assert_eq!(settings.custom_theme_paths, ["theme-a.toml"]);
+    assert_eq!(settings.active_custom_theme_path, None);
 }
 
 #[test]

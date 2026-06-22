@@ -165,6 +165,11 @@ impl KuroyaApp {
                         query_too_large,
                         self.buffer_find_match,
                         count,
+                        BufferFindStatusColors {
+                            warning: ui.visuals().warn_fg_color,
+                            error: ui.visuals().error_fg_color,
+                            muted: ui.visuals().weak_text_color(),
+                        },
                     );
                     ui.label(
                         RichText::new(status.label.as_ref())
@@ -263,6 +268,7 @@ fn cached_buffer_find_status_display(
     query_too_large: bool,
     match_index: usize,
     count: usize,
+    colors: BufferFindStatusColors,
 ) -> Arc<BufferFindStatusDisplay> {
     ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<BufferFindPanelDisplayCache>(Id::new(
@@ -276,6 +282,7 @@ fn cached_buffer_find_status_display(
             query_too_large,
             match_index,
             count,
+            colors,
         )
     })
 }
@@ -296,6 +303,7 @@ impl BufferFindPanelDisplayCache {
         query_too_large: bool,
         match_index: usize,
         count: usize,
+        colors: BufferFindStatusColors,
     ) -> Arc<BufferFindStatusDisplay> {
         if large_file_find_blocked || query_too_large {
             self.regex_invalid.clear();
@@ -312,7 +320,7 @@ impl BufferFindPanelDisplayCache {
             match_index,
             count,
         );
-        self.status.display_for(state)
+        self.status.display_for(state, colors)
     }
 }
 
@@ -357,14 +365,22 @@ impl BufferFindRegexInvalidCache {
 #[derive(Clone, Default)]
 struct BufferFindStatusDisplayCache {
     state: Option<BufferFindStatusState>,
+    colors: Option<BufferFindStatusColors>,
     display: Option<Arc<BufferFindStatusDisplay>>,
 }
 
 impl BufferFindStatusDisplayCache {
-    fn display_for(&mut self, state: BufferFindStatusState) -> Arc<BufferFindStatusDisplay> {
-        if self.state != Some(state) {
+    fn display_for(
+        &mut self,
+        state: BufferFindStatusState,
+        colors: BufferFindStatusColors,
+    ) -> Arc<BufferFindStatusDisplay> {
+        if self.state != Some(state) || self.colors != Some(colors) {
             self.state = Some(state);
-            self.display = Some(Arc::new(buffer_find_status_display_for_state(state)));
+            self.colors = Some(colors);
+            self.display = Some(Arc::new(buffer_find_status_display_for_state(
+                state, colors,
+            )));
         }
 
         Arc::clone(
@@ -381,6 +397,13 @@ enum BufferFindStatusState {
     QueryTooLong,
     InvalidRegex,
     Matches { current: usize, count: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BufferFindStatusColors {
+    warning: Color32,
+    error: Color32,
+    muted: Color32,
 }
 
 #[derive(Clone, Debug)]
@@ -410,23 +433,26 @@ fn buffer_find_status_state(
     }
 }
 
-fn buffer_find_status_display_for_state(state: BufferFindStatusState) -> BufferFindStatusDisplay {
+fn buffer_find_status_display_for_state(
+    state: BufferFindStatusState,
+    colors: BufferFindStatusColors,
+) -> BufferFindStatusDisplay {
     match state {
         BufferFindStatusState::LargeFileMode => BufferFindStatusDisplay {
             label: Arc::from("Large file mode"),
-            color: Color32::from_rgb(242, 178, 90),
+            color: colors.warning,
         },
         BufferFindStatusState::QueryTooLong => BufferFindStatusDisplay {
             label: Arc::from("Query too long"),
-            color: Color32::from_rgb(242, 178, 90),
+            color: colors.warning,
         },
         BufferFindStatusState::InvalidRegex => BufferFindStatusDisplay {
             label: Arc::from("Invalid regex"),
-            color: Color32::from_rgb(220, 76, 70),
+            color: colors.error,
         },
         BufferFindStatusState::Matches { current, count } => BufferFindStatusDisplay {
             label: Arc::from(format!("{current} / {count}")),
-            color: Color32::from_rgb(126, 136, 150),
+            color: colors.muted,
         },
     }
 }
@@ -473,11 +499,21 @@ fn buffer_find_normalized_regex_invalid(query: &str, case_sensitive: bool) -> bo
 mod tests {
     use super::{
         BUFFER_FIND_STATUS_LABEL_MAX_CHARS, BUFFER_FIND_WINDOW_HEIGHT, BufferFindPanelDisplayCache,
-        BufferFindRegexInvalidCache, BufferFindStatusState, buffer_find_extra_top_space,
-        buffer_find_regex_invalid, buffer_find_status_display_for_state, buffer_find_status_label,
+        BufferFindRegexInvalidCache, BufferFindStatusColors, BufferFindStatusState,
+        buffer_find_extra_top_space, buffer_find_regex_invalid,
+        buffer_find_status_display_for_state, buffer_find_status_label,
         buffer_find_status_label_cow,
     };
+    use eframe::egui::Color32;
     use std::{borrow::Cow, sync::Arc};
+
+    fn test_status_colors() -> BufferFindStatusColors {
+        BufferFindStatusColors {
+            warning: Color32::from_rgb(242, 178, 90),
+            error: Color32::from_rgb(220, 76, 70),
+            muted: Color32::from_rgb(126, 136, 150),
+        }
+    }
 
     #[test]
     fn regex_validation_does_not_require_a_buffer_search() {
@@ -500,37 +536,52 @@ mod tests {
     #[test]
     fn find_status_display_reports_panel_states() {
         assert_eq!(
-            buffer_find_status_display_for_state(BufferFindStatusState::LargeFileMode)
-                .label
-                .as_ref(),
+            buffer_find_status_display_for_state(
+                BufferFindStatusState::LargeFileMode,
+                test_status_colors()
+            )
+            .label
+            .as_ref(),
             "Large file mode"
         );
         assert_eq!(
-            buffer_find_status_display_for_state(BufferFindStatusState::QueryTooLong)
-                .label
-                .as_ref(),
+            buffer_find_status_display_for_state(
+                BufferFindStatusState::QueryTooLong,
+                test_status_colors()
+            )
+            .label
+            .as_ref(),
             "Query too long"
         );
         assert_eq!(
-            buffer_find_status_display_for_state(BufferFindStatusState::InvalidRegex)
-                .label
-                .as_ref(),
+            buffer_find_status_display_for_state(
+                BufferFindStatusState::InvalidRegex,
+                test_status_colors()
+            )
+            .label
+            .as_ref(),
             "Invalid regex"
         );
         assert_eq!(
-            buffer_find_status_display_for_state(BufferFindStatusState::Matches {
-                current: 0,
-                count: 0
-            })
+            buffer_find_status_display_for_state(
+                BufferFindStatusState::Matches {
+                    current: 0,
+                    count: 0
+                },
+                test_status_colors()
+            )
             .label
             .as_ref(),
             "0 / 0"
         );
         assert_eq!(
-            buffer_find_status_display_for_state(BufferFindStatusState::Matches {
-                current: 4,
-                count: 4
-            })
+            buffer_find_status_display_for_state(
+                BufferFindStatusState::Matches {
+                    current: 4,
+                    count: 4
+                },
+                test_status_colors()
+            )
             .label
             .as_ref(),
             "4 / 4"
@@ -619,20 +670,55 @@ mod tests {
     #[test]
     fn find_status_display_cache_reuses_unchanged_display() {
         let mut cache = BufferFindPanelDisplayCache::default();
-        let first = cache.status_display(false, "needle", true, false, false, 2, 4);
-        let second = cache.status_display(false, "different raw query", false, false, false, 2, 4);
+        let colors = test_status_colors();
+        let first = cache.status_display(false, "needle", true, false, false, 2, 4, colors);
+        let second = cache.status_display(
+            false,
+            "different raw query",
+            false,
+            false,
+            false,
+            2,
+            4,
+            colors,
+        );
 
         assert!(Arc::ptr_eq(&first, &second));
 
-        let changed = cache.status_display(false, "different raw query", false, false, false, 3, 4);
+        let changed = cache.status_display(
+            false,
+            "different raw query",
+            false,
+            false,
+            false,
+            3,
+            4,
+            colors,
+        );
         assert!(!Arc::ptr_eq(&first, &changed));
         assert_eq!(changed.label.as_ref(), "4 / 4");
     }
 
     #[test]
+    fn find_status_display_cache_updates_when_theme_colors_change() {
+        let mut cache = BufferFindPanelDisplayCache::default();
+        let first_colors = test_status_colors();
+        let second_colors = BufferFindStatusColors {
+            muted: Color32::from_rgb(20, 40, 60),
+            ..first_colors
+        };
+        let first = cache.status_display(false, "needle", true, false, false, 2, 4, first_colors);
+        let second = cache.status_display(false, "needle", true, false, false, 2, 4, second_colors);
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(second.label.as_ref(), "3 / 4");
+        assert_eq!(second.color, second_colors.muted);
+    }
+
+    #[test]
     fn find_status_display_reports_oversized_query_without_regex_validation() {
         let mut cache = BufferFindPanelDisplayCache::default();
-        let status = cache.status_display(true, "(", true, false, true, 0, 0);
+        let status = cache.status_display(true, "(", true, false, true, 0, 0, test_status_colors());
 
         assert_eq!(status.label.as_ref(), "Query too long");
     }
@@ -643,7 +729,8 @@ mod tests {
         let query = format!("  ({}{}\n  ", "x".repeat(32), "\u{202e}");
         let original = query.clone();
 
-        let status = cache.status_display(true, &query, true, false, false, 0, 0);
+        let status =
+            cache.status_display(true, &query, true, false, false, 0, 0, test_status_colors());
 
         assert_eq!(query, original);
         assert_eq!(status.label.as_ref(), "Invalid regex");

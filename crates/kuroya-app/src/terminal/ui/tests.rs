@@ -1,3 +1,7 @@
+use super::layout::{
+    TERMINAL_MAX_LAYOUT_POINTS, TERMINAL_PATH_LINK_SCAN_MAX_COLUMNS,
+    TERMINAL_SPLIT_SEPARATOR_WIDTH, terminal_cell_rect,
+};
 use super::*;
 use std::path::Path;
 

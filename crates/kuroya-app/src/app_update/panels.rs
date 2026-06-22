@@ -11,7 +11,7 @@ use crate::{
     },
     panel_layout::{PanelDockSide, PanelPlacement},
 };
-use eframe::egui::{self, Color32, Context, Frame, Id, TopBottomPanel};
+use eframe::egui::{self, Context, Frame, Id, TopBottomPanel};
 use std::ops::RangeInclusive;
 
 impl KuroyaApp {
@@ -85,8 +85,9 @@ impl KuroyaApp {
             );
         }
 
+        let editor_fill = ctx.style().visuals.code_bg_color;
         egui::CentralPanel::default()
-            .frame(Frame::NONE.fill(Color32::from_rgb(30, 30, 30)))
+            .frame(Frame::NONE.fill(editor_fill))
             .show(ctx, |ui| {
                 self.render_editor(ui);
             });

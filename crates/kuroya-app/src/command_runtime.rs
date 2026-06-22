@@ -93,6 +93,7 @@ impl KuroyaApp {
             | Command::CycleTheme
             | Command::ToggleMinimap
             | Command::ToggleStickyScroll
+            | Command::ToggleVimMode
             | Command::ToggleCommandPalette
             | Command::ToggleQuickOpen
             | Command::ToggleBufferFind

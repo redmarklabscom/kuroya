@@ -2,6 +2,7 @@ use crate::{
     explorer::{ExplorerEntryKind, ExplorerOperationResult},
     image_preview::LoadedImagePreview,
     lsp_ui_events::LspUiEvent,
+    plugin_command_runtime::PluginCommandExecution,
     source_control_diff_runtime::{SourceControlDiffOpenOutcome, SourceControlDiffOpenRequest},
     source_control_patch_runtime::{SourceControlPatchCopyOutcome, SourceControlPatchCopyRequest},
     startup_tasks::GitScanRootCacheEntry,
@@ -13,8 +14,7 @@ use crate::{
 use kuroya_core::{
     BufferId, Diagnostic, GitBlameLine, GitBranch, GitChangeStage, GitCommitSummary, GitDiffHunk,
     GitLineChangeKind, GitSnapshot, GitStashEntry, LspFoldingRange, PluginDescriptor,
-    PluginDiscoveryError, ProjectIndex, ProjectSearchIndex, SearchResult, TextBuffer,
-    WorkspaceTask,
+    PluginDiscoveryError, ProjectIndex, SearchProgress, SearchResult, TextBuffer, WorkspaceTask,
 };
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
@@ -35,12 +35,6 @@ pub(crate) enum UiEvent {
         request_id: u64,
         root: PathBuf,
         index: ProjectIndex,
-        search_index: ProjectSearchIndex,
-    },
-    ProjectSearchIndexed {
-        request_id: u64,
-        root: PathBuf,
-        search_index: ProjectSearchIndex,
     },
     FileLoaded {
         root: PathBuf,
@@ -204,6 +198,17 @@ pub(crate) enum UiEvent {
         include_globs: Vec<String>,
         exclude_globs: Vec<String>,
         result: SearchResult,
+    },
+    SearchProgress {
+        request_id: u64,
+        index_generation: u64,
+        workspace_root: PathBuf,
+        query: String,
+        case_sensitive: bool,
+        whole_word: bool,
+        include_globs: Vec<String>,
+        exclude_globs: Vec<String>,
+        progress: SearchProgress,
     },
     GitScanned {
         request_id: u64,
@@ -514,6 +519,13 @@ pub(crate) enum UiEvent {
         request_id: u64,
         root: PathBuf,
         error: String,
+    },
+    PluginCommandFinished {
+        root: PathBuf,
+        generation: u64,
+        plugin_id: String,
+        command_id: String,
+        result: Result<PluginCommandExecution, String>,
     },
     DiagnosticsComputed {
         request_id: u64,
