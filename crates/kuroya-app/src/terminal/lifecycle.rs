@@ -310,10 +310,28 @@ impl TerminalSession {
 
     fn process_terminal_output(&mut self, output: &[u8], stats: &mut TerminalDrainStats) {
         stats.bytes = stats.bytes.saturating_add(output.len());
-        self.append_search_output(output);
-        self.parser.process(output);
+        let mut cursor = 0;
+        for clear_end in terminal_scrollback_clear_sequence_ends(output) {
+            self.process_terminal_output_segment(&output[cursor..clear_end]);
+            if self.take_pending_scrollback_clear() {
+                self.clear_scrollback_from_terminal();
+            }
+            cursor = clear_end;
+        }
+        self.process_terminal_output_segment(&output[cursor..]);
+        if self.take_pending_scrollback_clear() {
+            self.clear_scrollback_from_terminal();
+        }
         self.flush_terminal_responses();
         stats.bells = stats.bells.saturating_add(self.take_pending_bells());
+    }
+
+    fn process_terminal_output_segment(&mut self, output: &[u8]) {
+        if output.is_empty() {
+            return;
+        }
+        self.append_search_output(output);
+        self.parser.process(output);
     }
 
     pub(super) fn mark_stopped(&mut self) {
@@ -341,6 +359,69 @@ impl TerminalSession {
     fn take_pending_bells(&mut self) -> usize {
         std::mem::take(&mut self.parser.callbacks_mut().pending_bells)
     }
+
+    fn take_pending_scrollback_clear(&mut self) -> bool {
+        std::mem::take(&mut self.parser.callbacks_mut().pending_clear_scrollback)
+    }
+}
+
+fn terminal_scrollback_clear_sequence_ends(output: &[u8]) -> Vec<usize> {
+    let mut clear_ends = Vec::new();
+    let mut index = 0;
+    while index < output.len() {
+        let Some((end, clears_scrollback)) = terminal_csi_sequence_end(output, index) else {
+            index += 1;
+            continue;
+        };
+        if clears_scrollback {
+            clear_ends.push(end);
+        }
+        index = end;
+    }
+    clear_ends
+}
+
+fn terminal_csi_sequence_end(output: &[u8], index: usize) -> Option<(usize, bool)> {
+    let mut cursor = match output.get(index..index.saturating_add(2)) {
+        Some(b"\x1b[") => index + 2,
+        _ if output.get(index) == Some(&0x9b) => index + 1,
+        _ => return None,
+    };
+
+    let private = output.get(cursor) == Some(&b'?');
+    if private {
+        cursor += 1;
+    }
+    while output.get(cursor).is_some_and(u8::is_ascii_digit) {
+        cursor += 1;
+    }
+    let clears_scrollback = output.get(cursor) == Some(&b'J')
+        && terminal_csi_first_numeric_param(&output[index..cursor]) == Some(3);
+    Some((cursor.saturating_add(1), clears_scrollback))
+}
+
+fn terminal_csi_first_numeric_param(sequence_prefix: &[u8]) -> Option<u16> {
+    let start = sequence_prefix
+        .iter()
+        .rposition(|byte| *byte == b'[' || *byte == 0x9b)?
+        .saturating_add(1);
+    let start = if sequence_prefix.get(start) == Some(&b'?') {
+        start + 1
+    } else {
+        start
+    };
+    let mut value = 0_u16;
+    let mut saw_digit = false;
+    for byte in &sequence_prefix[start..] {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        saw_digit = true;
+        value = value
+            .saturating_mul(10)
+            .saturating_add(u16::from(byte - b'0'));
+    }
+    saw_digit.then_some(value)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -428,6 +509,16 @@ mod tests {
         assert_eq!(budget.events, 3);
         assert_eq!(budget.bytes, 0);
         assert!(!budget.can_drain());
+    }
+
+    #[test]
+    fn terminal_scrollback_clear_sequence_detection_finds_csi_3j_variants() {
+        let output = b"old\x1b[H\x1b[2J\x1b[3Jnew\x9b?3Jtail";
+        let ends = terminal_scrollback_clear_sequence_ends(output);
+
+        assert_eq!(ends.len(), 2);
+        assert_eq!(&output[ends[0]..], b"new\x9b?3Jtail");
+        assert_eq!(&output[ends[1]..], b"tail");
     }
 
     #[test]

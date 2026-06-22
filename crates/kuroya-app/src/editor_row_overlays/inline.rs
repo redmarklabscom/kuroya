@@ -44,7 +44,7 @@ pub(crate) fn paint_folded_label(
         egui::Align2::LEFT_TOP,
         label,
         FontId::new(row.font_size, FontFamily::Monospace),
-        Color32::from_rgb(126, 136, 150),
+        row.weak_text_color,
     );
 }
 
@@ -106,7 +106,7 @@ fn diagnostic_message_display<'a>(
                 .get(&line_number)
                 .copied()
                 .map(diagnostic_color)
-                .unwrap_or(Color32::from_rgb(126, 136, 150)),
+                .unwrap_or(row.weak_text_color),
         })
 }
 
@@ -192,7 +192,7 @@ pub(crate) fn paint_inlay_hints(
             pos2(x + row.char_width * 0.35, rect.top() + 3.0),
             hint.label,
             font_id.clone(),
-            Color32::from_rgb(126, 136, 150),
+            row.weak_text_color,
         );
     }
 }
@@ -322,7 +322,7 @@ pub(crate) fn paint_ime_preedit(
         egui::Align2::LEFT_TOP,
         label.as_str(),
         FontId::new(row.font_size, FontFamily::Monospace),
-        Color32::from_rgb(222, 226, 233),
+        row.text_color,
     );
 
     let label_width = visual_width(&label, row.tab_width).max(1) as f32 * row.char_width;
@@ -332,7 +332,7 @@ pub(crate) fn paint_ime_preedit(
             pos2(x, underline_y),
             pos2((x + label_width).min(rect.right()), underline_y),
         ],
-        egui::Stroke::new(1.0, Color32::from_rgb(91, 141, 239)),
+        egui::Stroke::new(1.0, row.selection_bg_fill),
     );
 }
 
@@ -385,7 +385,7 @@ pub(crate) fn paint_completion_preview(
         egui::Align2::LEFT_TOP,
         &preview.text,
         FontId::new(row.font_size, FontFamily::Monospace),
-        Color32::from_rgb(96, 105, 118),
+        row.weak_text_color,
     );
 }
 
@@ -427,7 +427,7 @@ pub(crate) fn paint_code_lenses(
             row.code_lens_font_size,
             row.font_size,
         ),
-        Color32::from_rgb(126, 136, 150),
+        row.weak_text_color,
     );
 }
 

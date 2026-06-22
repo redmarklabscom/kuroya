@@ -11,9 +11,10 @@ use crate::{
         signature_help_request_after_text_edit,
     },
     editor_vim_key_events::{
-        EditorVimMode, handle_vim_editor_key_event_with_state_and_indent,
-        vim_events_include_mutation, vim_record_insert_replay_key_with_auto_indent,
-        vim_record_inserted_text, vim_text_after_suppression,
+        EditorVimMode, handle_vim_editor_key_event_with_settings_and_indent,
+        vim_collapse_selection_for_insert, vim_events_include_mutation_with_settings,
+        vim_record_insert_replay_key_with_auto_indent, vim_record_inserted_text,
+        vim_text_after_suppression,
     },
     transient_state::EditorImePreedit,
     workspace_state::PaneId,
@@ -21,7 +22,7 @@ use crate::{
 use eframe::egui::{Context, Event, ImeEvent, Key, Modifiers};
 use kuroya_core::{
     BufferId, EditorAutoClosingEditStrategy, EditorMultiCursorPaste,
-    EditorPasteAsShowPasteSelector, TextBuffer, buffer::AutoPairSettings,
+    EditorPasteAsShowPasteSelector, EditorVimSettings, TextBuffer, buffer::AutoPairSettings,
 };
 use std::{borrow::Cow, collections::VecDeque, ops::Range};
 
@@ -121,12 +122,32 @@ struct EditorInputEventsSnapshot {
     events: Vec<EditorInputEvent>,
 }
 
+#[cfg(test)]
 fn editor_input_events_snapshot(
     events: &[Event],
     vim_keybindings: bool,
     vim_mode: EditorVimMode,
     vim_pending_key: Option<crate::editor_vim_key_events::EditorVimPendingKey>,
     coalesce_fast_text: bool,
+) -> EditorInputEventsSnapshot {
+    let default_vim_settings = EditorVimSettings::default();
+    editor_input_events_snapshot_with_vim_settings(
+        events,
+        vim_keybindings,
+        vim_mode,
+        vim_pending_key,
+        coalesce_fast_text,
+        &default_vim_settings,
+    )
+}
+
+fn editor_input_events_snapshot_with_vim_settings(
+    events: &[Event],
+    vim_keybindings: bool,
+    vim_mode: EditorVimMode,
+    vim_pending_key: Option<crate::editor_vim_key_events::EditorVimPendingKey>,
+    coalesce_fast_text: bool,
+    vim_settings: &EditorVimSettings,
 ) -> EditorInputEventsSnapshot {
     let classifier = EditorInputEventClassifier::for_mode(vim_keybindings, vim_mode);
     let mut snapshot = EditorInputEventsSnapshot {
@@ -150,7 +171,12 @@ fn editor_input_events_snapshot(
     }
     if vim_keybindings {
         snapshot.includes_mutation = vim_mutation_scan_required
-            && vim_events_include_mutation(events, vim_mode, vim_pending_key);
+            && vim_events_include_mutation_with_settings(
+                events,
+                vim_mode,
+                vim_pending_key,
+                vim_settings,
+            );
     }
     snapshot
 }
@@ -383,7 +409,7 @@ impl KuroyaApp {
         pane_id: PaneId,
         buffer_id: BufferId,
     ) {
-        if !self.editor_accepts_text_input(pane_id) {
+        if !self.editor_accepts_text_input(ctx, pane_id) {
             return;
         }
 
@@ -392,12 +418,13 @@ impl KuroyaApp {
             editor_text_event_coalescing_allowed_for_mode(vim_keybindings, self.editor_vim_mode)
                 && editor_text_event_coalescing_enabled_for_buffer(self, buffer_id);
         let events = ctx.input(|input| {
-            editor_input_events_snapshot(
+            editor_input_events_snapshot_with_vim_settings(
                 &input.events,
                 vim_keybindings,
                 self.editor_vim_mode,
                 self.editor_vim_pending_key,
                 coalesce_fast_text,
+                &self.settings.vim,
             )
         });
         if events.events.is_empty() {
@@ -473,11 +500,16 @@ impl KuroyaApp {
                     };
                     let text = text.as_ref();
                     let mut inserted = false;
+                    let vim_insert_mode =
+                        vim_keybindings && self.editor_vim_mode.accepts_text_input();
                     let snippet_ranges = active_snippet_ranges_for_buffer(self, buffer_id);
                     let mut snippet_snapshot = None;
                     let mut snippet_mode = false;
                     let mut snippet_after_edit = None;
                     if let Some(buffer) = self.buffer_mut(buffer_id) {
+                        if vim_insert_mode && snippet_ranges.is_none() {
+                            vim_collapse_selection_for_insert(buffer);
+                        }
                         snippet_snapshot = snippet_ranges.as_deref().and_then(|ranges| {
                             active_snippet_edit_snapshot_from_ranges(buffer, ranges)
                         });
@@ -542,12 +574,17 @@ impl KuroyaApp {
                         continue;
                     }
                     let text = text.as_str();
+                    let vim_insert_mode =
+                        vim_keybindings && self.editor_vim_mode.accepts_text_input();
                     let snippet_ranges = active_snippet_ranges_for_buffer(self, buffer_id);
                     let mut cursor_count = 0;
                     let mut snippet_snapshot = None;
                     let mut inserted = false;
                     let mut snippet_after_edit = None;
                     if let Some(buffer) = self.buffer_mut(buffer_id) {
+                        if vim_insert_mode && snippet_ranges.is_none() {
+                            vim_collapse_selection_for_insert(buffer);
+                        }
                         cursor_count = buffer.selections().len();
                         snippet_snapshot = snippet_ranges.as_deref().and_then(|ranges| {
                             active_snippet_edit_snapshot_from_ranges(buffer, ranges)
@@ -610,8 +647,9 @@ impl KuroyaApp {
                         let mut next_last_char_find = self.editor_vim_last_char_find;
                         let mut next_unnamed_register = self.editor_vim_unnamed_register.take();
                         let mut next_last_change = self.editor_vim_last_change.take();
+                        let vim_settings = self.settings.vim.clone();
                         let vim_result = self.buffer_mut(buffer_id).map(|buffer| {
-                            handle_vim_editor_key_event_with_state_and_indent(
+                            handle_vim_editor_key_event_with_settings_and_indent(
                                 buffer,
                                 key,
                                 modifiers,
@@ -620,6 +658,7 @@ impl KuroyaApp {
                                 &mut next_last_char_find,
                                 &mut next_unnamed_register,
                                 &mut next_last_change,
+                                &vim_settings,
                                 &indent_options.unit,
                             )
                         });
@@ -633,6 +672,9 @@ impl KuroyaApp {
                         {
                             if let Some(ch) = result.suppress_text {
                                 vim_suppressed_text.push_back(ch);
+                            }
+                            if let Some(command) = result.command {
+                                self.command_bus.push(command);
                             }
                             changed |= result.changed;
                             if previous_mode != self.editor_vim_mode {
@@ -689,7 +731,6 @@ impl KuroyaApp {
 
         if changed {
             self.mark_buffer_changed(buffer_id);
-            self.editor_defer_match_highlights_for_buffer = Some(buffer_id);
             ctx.request_repaint();
         }
         if keep_cursor_visible {
@@ -724,8 +765,9 @@ impl KuroyaApp {
         }
     }
 
-    pub(crate) fn editor_accepts_text_input(&self, pane_id: PaneId) -> bool {
+    pub(crate) fn editor_accepts_text_input(&self, ctx: &Context, pane_id: PaneId) -> bool {
         self.focused_pane == Some(pane_id)
+            && !self.terminal.input_focused(ctx)
             && !self.quick_open
             && !self.buffer_find_open
             && !self.goto_line_open

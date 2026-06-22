@@ -215,6 +215,84 @@ fn plugin_runtime_registry_returns_any_activation_once_for_specific_trigger() {
 }
 
 #[test]
+fn plugin_activation_state_activates_exact_plugin_command_without_cross_plugin_match() {
+    let first = PluginDescriptor {
+        root: PathBuf::from("plugins/first"),
+        manifest: PluginManifest {
+            api_version: PLUGIN_API_VERSION.to_owned(),
+            id: "first.plugin".to_owned(),
+            name: "First".to_owned(),
+            version: "0.1.0".to_owned(),
+            entry: Some(PathBuf::from("plugins/first/plugin.wasm")),
+            activation_events: Vec::new(),
+            capabilities: PluginCapabilities {
+                commands: true,
+                ..PluginCapabilities::default()
+            },
+            contributes: PluginContributions {
+                commands: vec![PluginCommandContribution {
+                    id: "shared.run".to_owned(),
+                    title: "Run".to_owned(),
+                    category: None,
+                }],
+                ..PluginContributions::default()
+            },
+        },
+    };
+    let second = PluginDescriptor {
+        root: PathBuf::from("plugins/second"),
+        manifest: PluginManifest {
+            api_version: PLUGIN_API_VERSION.to_owned(),
+            id: "second.plugin".to_owned(),
+            name: "Second".to_owned(),
+            version: "0.1.0".to_owned(),
+            entry: Some(PathBuf::from("plugins/second/plugin.wasm")),
+            activation_events: Vec::new(),
+            capabilities: PluginCapabilities {
+                commands: true,
+                ..PluginCapabilities::default()
+            },
+            contributes: PluginContributions {
+                commands: vec![PluginCommandContribution {
+                    id: "shared.run".to_owned(),
+                    title: "Run".to_owned(),
+                    category: None,
+                }],
+                ..PluginContributions::default()
+            },
+        },
+    };
+    let any = PluginDescriptor {
+        root: PathBuf::from("plugins/any"),
+        manifest: PluginManifest {
+            api_version: PLUGIN_API_VERSION.to_owned(),
+            id: "any.plugin".to_owned(),
+            name: "Any".to_owned(),
+            version: "0.1.0".to_owned(),
+            entry: None,
+            activation_events: vec![PluginActivationEvent::Any],
+            capabilities: PluginCapabilities::default(),
+            contributes: PluginContributions::default(),
+        },
+    };
+    let registry = PluginRuntimeRegistry::from_plugins(&[first, second, any]);
+    let mut state = PluginActivationState::default();
+
+    let activations = state.activate_plugin_command(&registry, "first.plugin", "shared.run");
+
+    assert_eq!(
+        activations
+            .iter()
+            .map(|record| record.plugin_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first.plugin", "any.plugin"]
+    );
+    assert!(state.is_active("first.plugin"));
+    assert!(!state.is_active("second.plugin"));
+    assert!(state.is_active("any.plugin"));
+}
+
+#[test]
 fn plugin_runtime_registry_activation_iter_dedupes_unsorted_indexes() {
     let registry = PluginRuntimeRegistry {
         plugins: vec![

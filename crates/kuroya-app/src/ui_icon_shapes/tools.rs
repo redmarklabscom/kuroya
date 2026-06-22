@@ -91,6 +91,33 @@ pub(super) fn draw_tool_icon(ui: &Ui, frame: &IconFrame, icon: IconKind, color: 
             painter.line_segment([frame.p(8.0, 8.0), frame.p(16.0, 8.0)], thin);
             painter.line_segment([frame.p(8.0, 16.0), frame.p(16.0, 16.0)], thin);
         }
+        IconKind::Keyboard => {
+            painter.rect_stroke(
+                frame.rr(4.0, 6.5, 20.0, 17.5),
+                2.0,
+                stroke,
+                StrokeKind::Inside,
+            );
+            for (x1, x2) in [
+                (6.8, 8.2),
+                (9.4, 10.8),
+                (12.0, 13.4),
+                (14.6, 16.0),
+                (17.2, 18.6),
+            ] {
+                painter.line_segment([frame.p(x1, 10.0), frame.p(x2, 10.0)], thin);
+            }
+            for (x1, x2) in [
+                (6.8, 8.2),
+                (9.4, 10.8),
+                (12.0, 13.4),
+                (14.6, 16.0),
+                (17.2, 18.6),
+            ] {
+                painter.line_segment([frame.p(x1, 13.2), frame.p(x2, 13.2)], thin);
+            }
+            painter.line_segment([frame.p(8.0, 15.4), frame.p(16.0, 15.4)], thin);
+        }
         IconKind::Theme => {
             painter.circle_stroke(frame.p(12.0, 12.0), frame.rect().width() * 0.18, stroke);
             for (x1, y1, x2, y2) in [

@@ -1,6 +1,7 @@
 use crate::{
     KuroyaApp, devtools_async_tasks::render_async_task_panel,
-    devtools_lsp_trace::render_lsp_trace_panel, devtools_profile::render_profile_panel,
+    devtools_lsp_trace::render_lsp_trace_panel, devtools_memory::render_memory_diagnostics_panel,
+    devtools_profile::render_profile_panel,
     devtools_repaint_diagnostics::render_repaint_diagnostics_panel,
     devtools_startup::render_startup_timing_panel, devtools_trace_id::next_devtools_trace_id,
     path_display::sanitized_display_label_cow, ui_text::count_label,
@@ -106,6 +107,9 @@ impl KuroyaApp {
                         render_frame_timing_panel(ui, &self.frame_timings);
                         ui.separator();
                         render_repaint_diagnostics_panel(ui, &self.repaint_diagnostics);
+                        ui.separator();
+                        let memory = self.memory_diagnostics_summary();
+                        render_memory_diagnostics_panel(ui, &memory);
                         ui.separator();
                         render_command_trace_panel(ui, &self.command_trace);
                         ui.separator();

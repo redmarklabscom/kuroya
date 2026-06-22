@@ -21,103 +21,129 @@ use std::{
 
 const TAB_MIN_WIDTH: f32 = 72.0;
 const TAB_MAX_WIDTH: f32 = 220.0;
-const TAB_ACTIONS_RESERVED_WIDTH: f32 = 196.0;
+const TAB_ACTIONS_RESERVED_WIDTH: f32 = 228.0;
+const TAB_ROW_HEIGHT: f32 = 34.0;
 
 impl KuroyaApp {
     pub(crate) fn render_tabs(&mut self, ui: &mut egui::Ui) {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.add_space(6.0);
-            let tab_max_width = responsive_tab_max_width(ui.available_width(), self.buffers.len());
+            let available_width = ui.available_width();
+            let actions_width = responsive_tab_actions_width(available_width);
+            let tab_area_width = (available_width - actions_width).max(0.0);
+            let tab_max_width = responsive_tab_max_width(tab_area_width, self.buffers.len());
 
             let tabs = self.prepare_tab_rows();
 
-            for tab_state in tabs {
-                let id = tab_state.id;
-                debug_assert_eq!(tab_state.path_capabilities, TabPathCapabilities::default());
-                let tab = file_tab(
-                    ui,
-                    &tab_state.label,
-                    &tab_state.name,
-                    tab_state.selected,
-                    tab_state.changed_on_disk,
-                    tab_max_width,
-                );
-                if tab.close_clicked {
-                    if self.tab_action_is_current(&tab_state) {
-                        self.request_close_buffer(id);
-                    }
-                } else if tab.tab_clicked {
-                    if self.tab_action_is_current(&tab_state) {
-                        self.set_active_buffer(id);
-                    }
-                }
-                tab.response.context_menu(|ui| {
-                    let mut path_exists_cache =
-                        HashMap::with_capacity(tab_path_openability_cache_capacity(
-                            &tab_state,
-                            self.explorer_compare_path.as_deref(),
-                        ));
-                    let tab_action_current = self.tab_action_is_current(&tab_state);
-                    if !tab_action_current {
-                        ui.label(RichText::new("Tab changed").small());
-                    }
-                    if tab_action_current {
-                        if ui.button("Save").clicked() {
-                            self.spawn_save(id);
-                            ui.close();
-                        }
-                        if ui.button("Reload from Disk").clicked() {
-                            self.begin_reload_buffer_from_disk(id);
-                            ui.close();
-                        }
-                        if ui
-                            .button(if tab_state.read_only {
-                                "Disable Read Only"
-                            } else {
-                                "Enable Read Only"
-                            })
-                            .clicked()
-                        {
-                            self.toggle_buffer_read_only(id);
-                            ui.close();
-                        }
-                        let can_copy_patch = self.can_copy_diff_buffer_patch(id);
-                        if tab_state.diff_source.is_some() || can_copy_patch {
-                            ui.separator();
-                            let diff_capabilities = {
-                                let indexed_files = self.index.files();
-                                let buffers = &self.buffers;
-                                let mut path_exists = TabPathOpenabilityProbe {
-                                    cache: &mut path_exists_cache,
-                                    buffers,
-                                    indexed_files,
-                                };
-                                prepare_tab_path_capabilities(
-                                    &tab_state,
-                                    TabCapabilityRequests::DIFF_SOURCE_ACTIONS,
-                                    None,
-                                    &mut path_exists,
-                                )
-                            };
-                            let stage = tab_state
-                                .diff_source
-                                .as_ref()
-                                .and_then(|source| source.hunk_stage);
-                            let swap_enabled = tab_state
-                                .diff_source
-                                .as_ref()
-                                .is_some_and(|source| source.base_path.is_some());
-                            visit_diff_tab_context_actions(
-                                stage,
-                                diff_capabilities.diff_source_exists,
-                                can_copy_patch,
-                                tab_state.diff_source.is_some(),
-                                tab_state.diff_source.is_some(),
-                                swap_enabled,
-                                |action| {
-                                    if ui.button(diff_tab_context_action_label(action)).clicked() {
-                                        match action {
+            ui.allocate_ui_with_layout(
+                vec2(tab_area_width, TAB_ROW_HEIGHT),
+                egui::Layout::left_to_right(Align::Center),
+                |ui| {
+                    egui::ScrollArea::horizontal()
+                        .id_salt("main_open_file_tabs_scroll")
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .auto_shrink([false, false])
+                        .max_height(TAB_ROW_HEIGHT)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for tab_state in tabs {
+                                    let id = tab_state.id;
+                                    debug_assert_eq!(
+                                        tab_state.path_capabilities,
+                                        TabPathCapabilities::default()
+                                    );
+                                    let tab = file_tab(
+                                        ui,
+                                        &tab_state.label,
+                                        &tab_state.name,
+                                        tab_state.selected,
+                                        tab_state.changed_on_disk,
+                                        tab_max_width,
+                                    );
+                                    if tab.close_clicked {
+                                        if self.tab_action_is_current(&tab_state) {
+                                            self.request_close_buffer(id);
+                                        }
+                                    } else if tab.tab_clicked {
+                                        if self.tab_action_is_current(&tab_state) {
+                                            self.set_active_buffer(id);
+                                        }
+                                    }
+                                    tab.response.context_menu(|ui| {
+                                        let mut path_exists_cache = HashMap::with_capacity(
+                                            tab_path_openability_cache_capacity(
+                                                &tab_state,
+                                                self.explorer_compare_path.as_deref(),
+                                            ),
+                                        );
+                                        let tab_action_current =
+                                            self.tab_action_is_current(&tab_state);
+                                        if !tab_action_current {
+                                            ui.label(RichText::new("Tab changed").small());
+                                        }
+                                        if tab_action_current {
+                                            if ui.button("Save").clicked() {
+                                                self.spawn_save(id);
+                                                ui.close();
+                                            }
+                                            if ui.button("Reload from Disk").clicked() {
+                                                self.begin_reload_buffer_from_disk(id);
+                                                ui.close();
+                                            }
+                                            if ui
+                                                .button(if tab_state.read_only {
+                                                    "Disable Read Only"
+                                                } else {
+                                                    "Enable Read Only"
+                                                })
+                                                .clicked()
+                                            {
+                                                self.toggle_buffer_read_only(id);
+                                                ui.close();
+                                            }
+                                            let can_copy_patch =
+                                                self.can_copy_diff_buffer_patch(id);
+                                            if tab_state.diff_source.is_some() || can_copy_patch {
+                                                ui.separator();
+                                                let diff_capabilities = {
+                                                    let indexed_files = self.index.files();
+                                                    let buffers = &self.buffers;
+                                                    let mut path_exists = TabPathOpenabilityProbe {
+                                                        cache: &mut path_exists_cache,
+                                                        buffers,
+                                                        indexed_files,
+                                                    };
+                                                    prepare_tab_path_capabilities(
+                                                        &tab_state,
+                                                        TabCapabilityRequests::DIFF_SOURCE_ACTIONS,
+                                                        None,
+                                                        &mut path_exists,
+                                                    )
+                                                };
+                                                let stage = tab_state
+                                                    .diff_source
+                                                    .as_ref()
+                                                    .and_then(|source| source.hunk_stage);
+                                                let swap_enabled =
+                                                    tab_state.diff_source.as_ref().is_some_and(
+                                                        |source| source.base_path.is_some(),
+                                                    );
+                                                visit_diff_tab_context_actions(
+                                                    stage,
+                                                    diff_capabilities.diff_source_exists,
+                                                    can_copy_patch,
+                                                    tab_state.diff_source.is_some(),
+                                                    tab_state.diff_source.is_some(),
+                                                    swap_enabled,
+                                                    |action| {
+                                                        if ui
+                                                            .button(diff_tab_context_action_label(
+                                                                action,
+                                                            ))
+                                                            .clicked()
+                                                        {
+                                                            match action {
                                             DiffTabContextActionKind::RefreshDiff => {
                                                 self.refresh_diff_buffer(id);
                                             }
@@ -176,156 +202,193 @@ impl KuroyaApp {
                                                 }
                                             }
                                         }
-                                        ui.close();
-                                    }
-                                },
-                            );
-                            ui.separator();
-                        }
-                        if let Some(path) = tab_state.context_path.as_ref() {
-                            if tab_state.has_unstaged_changes && ui.button("Open Changes").clicked()
-                            {
-                                if tab_state.file_path.as_ref() == Some(path) {
-                                    self.open_buffer_changes(id);
-                                } else {
-                                    self.command_bus
-                                        .push(Command::OpenFileChanges(path.clone()));
-                                }
-                                ui.close();
-                            }
-                            if tab_state.has_staged_changes
-                                && ui.button("Open Staged Changes").clicked()
-                            {
-                                self.command_bus
-                                    .push(Command::OpenStagedFileChanges(path.clone()));
-                                ui.close();
-                            }
-                            if tab_state.has_unstaged_changes && ui.button("Open Hunks").clicked() {
-                                self.command_bus.push(Command::OpenFileHunks(path.clone()));
-                                ui.close();
-                            }
-                            if tab_state.has_staged_changes
-                                && ui.button("Open Staged Hunks").clicked()
-                            {
-                                self.command_bus
-                                    .push(Command::OpenStagedFileHunks(path.clone()));
-                                ui.close();
-                            }
-                            if tab_state.has_unstaged_changes && ui.button("Copy Patch").clicked() {
-                                self.command_bus.push(Command::CopyFilePatch(path.clone()));
-                                ui.close();
-                            }
-                            if tab_state.has_staged_changes
-                                && ui.button("Copy Staged Patch").clicked()
-                            {
-                                self.command_bus
-                                    .push(Command::CopyStagedFilePatch(path.clone()));
-                                ui.close();
-                            }
-                        }
-                        if let Some(path) = tab_state.file_path.as_ref()
-                            && ui.button("Open Blame").clicked()
-                        {
-                            self.command_bus.push(Command::OpenFileBlame(path.clone()));
-                            ui.close();
-                        }
-                        if let Some(path) = tab_state.context_path.as_ref() {
-                            let compare_capabilities = {
-                                let indexed_files = self.index.files();
-                                let buffers = &self.buffers;
-                                let mut path_exists = TabPathOpenabilityProbe {
-                                    cache: &mut path_exists_cache,
-                                    buffers,
-                                    indexed_files,
-                                };
-                                prepare_tab_path_capabilities(
-                                    &tab_state,
-                                    TabCapabilityRequests::FILE_COMPARE_ACTIONS,
-                                    self.explorer_compare_path.as_deref(),
-                                    &mut path_exists,
-                                )
-                            };
-                            if compare_capabilities.can_compare_with_saved
-                                && ui.button("Compare with Saved").clicked()
-                            {
-                                self.set_active_buffer(id);
-                                self.command_bus.push(Command::CompareActiveFileWithSaved);
-                                ui.close();
-                            }
-                            if compare_capabilities.can_select_for_compare
-                                && ui.button("Select for Compare").clicked()
-                            {
-                                self.command_bus
-                                    .push(Command::SelectFileForCompare(path.clone()));
-                                ui.close();
-                            }
-                            if compare_capabilities.can_compare_with_selected
-                                && ui.button("Compare with Selected").clicked()
-                            {
-                                self.command_bus
-                                    .push(Command::CompareFileWithSelected(path.clone()));
-                                ui.close();
-                            }
-                            if tab_state.has_unstaged_changes
-                                && ui.button("Stage Changes").clicked()
-                            {
-                                self.command_bus
-                                    .push(Command::StageFileChange(path.clone()));
-                                ui.close();
-                            }
-                            if tab_state.has_staged_changes
-                                && ui.button("Unstage Changes").clicked()
-                            {
-                                self.command_bus
-                                    .push(Command::UnstageFileChange(path.clone()));
-                                ui.close();
-                            }
-                            if tab_state.has_source_control_changes
-                                && ui.button("Discard Changes").clicked()
-                            {
-                                self.command_bus
-                                    .push(Command::DiscardFileChanges(path.clone()));
-                                ui.close();
-                            }
-                            if tab_state.has_source_control_changes
-                                && ui.button("Reveal in Source Control").clicked()
-                            {
-                                self.command_bus
-                                    .push(Command::RevealFileInSourceControl(path.clone()));
-                                ui.close();
-                            }
-                            if ui.button("Reveal in Explorer").clicked() {
-                                self.command_bus
-                                    .push(Command::RevealFileInExplorer(path.clone()));
-                                ui.close();
-                            }
-                            if ui.button("Compare with HEAD").clicked() {
-                                self.command_bus
-                                    .push(Command::OpenFileHeadChanges(path.clone()));
-                                ui.close();
-                            }
-                            if tab_state.has_head_revision
-                                && ui.button("Open File at HEAD").clicked()
-                            {
-                                self.command_bus
-                                    .push(Command::OpenFileHeadRevision(path.clone()));
-                                ui.close();
-                            }
-                            if tab_state.has_index_revision
-                                && ui.button("Open File at Index").clicked()
-                            {
-                                self.command_bus
-                                    .push(Command::OpenFileIndexRevision(path.clone()));
-                                ui.close();
-                            }
-                            visit_file_tab_path_context_actions(
-                                tab_state.file_path.is_some(),
-                                |action| {
-                                    if ui
-                                        .button(file_tab_path_context_action_label(action))
-                                        .clicked()
-                                    {
-                                        match action {
+                                                            ui.close();
+                                                        }
+                                                    },
+                                                );
+                                                ui.separator();
+                                            }
+                                            if let Some(path) = tab_state.context_path.as_ref() {
+                                                if tab_state.has_unstaged_changes
+                                                    && ui.button("Open Changes").clicked()
+                                                {
+                                                    if tab_state.file_path.as_ref() == Some(path) {
+                                                        self.open_buffer_changes(id);
+                                                    } else {
+                                                        self.command_bus.push(
+                                                            Command::OpenFileChanges(path.clone()),
+                                                        );
+                                                    }
+                                                    ui.close();
+                                                }
+                                                if tab_state.has_staged_changes
+                                                    && ui.button("Open Staged Changes").clicked()
+                                                {
+                                                    self.command_bus.push(
+                                                        Command::OpenStagedFileChanges(
+                                                            path.clone(),
+                                                        ),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                if tab_state.has_unstaged_changes
+                                                    && ui.button("Open Hunks").clicked()
+                                                {
+                                                    self.command_bus
+                                                        .push(Command::OpenFileHunks(path.clone()));
+                                                    ui.close();
+                                                }
+                                                if tab_state.has_staged_changes
+                                                    && ui.button("Open Staged Hunks").clicked()
+                                                {
+                                                    self.command_bus.push(
+                                                        Command::OpenStagedFileHunks(path.clone()),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                if tab_state.has_unstaged_changes
+                                                    && ui.button("Copy Patch").clicked()
+                                                {
+                                                    self.command_bus
+                                                        .push(Command::CopyFilePatch(path.clone()));
+                                                    ui.close();
+                                                }
+                                                if tab_state.has_staged_changes
+                                                    && ui.button("Copy Staged Patch").clicked()
+                                                {
+                                                    self.command_bus.push(
+                                                        Command::CopyStagedFilePatch(path.clone()),
+                                                    );
+                                                    ui.close();
+                                                }
+                                            }
+                                            if let Some(path) = tab_state.file_path.as_ref()
+                                                && ui.button("Open Blame").clicked()
+                                            {
+                                                self.command_bus
+                                                    .push(Command::OpenFileBlame(path.clone()));
+                                                ui.close();
+                                            }
+                                            if let Some(path) = tab_state.context_path.as_ref() {
+                                                let compare_capabilities = {
+                                                    let indexed_files = self.index.files();
+                                                    let buffers = &self.buffers;
+                                                    let mut path_exists = TabPathOpenabilityProbe {
+                                                        cache: &mut path_exists_cache,
+                                                        buffers,
+                                                        indexed_files,
+                                                    };
+                                                    prepare_tab_path_capabilities(
+                                                        &tab_state,
+                                                        TabCapabilityRequests::FILE_COMPARE_ACTIONS,
+                                                        self.explorer_compare_path.as_deref(),
+                                                        &mut path_exists,
+                                                    )
+                                                };
+                                                if compare_capabilities.can_compare_with_saved
+                                                    && ui.button("Compare with Saved").clicked()
+                                                {
+                                                    self.set_active_buffer(id);
+                                                    self.command_bus
+                                                        .push(Command::CompareActiveFileWithSaved);
+                                                    ui.close();
+                                                }
+                                                if compare_capabilities.can_select_for_compare
+                                                    && ui.button("Select for Compare").clicked()
+                                                {
+                                                    self.command_bus.push(
+                                                        Command::SelectFileForCompare(path.clone()),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                if compare_capabilities.can_compare_with_selected
+                                                    && ui.button("Compare with Selected").clicked()
+                                                {
+                                                    self.command_bus.push(
+                                                        Command::CompareFileWithSelected(
+                                                            path.clone(),
+                                                        ),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                if tab_state.has_unstaged_changes
+                                                    && ui.button("Stage Changes").clicked()
+                                                {
+                                                    self.command_bus.push(
+                                                        Command::StageFileChange(path.clone()),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                if tab_state.has_staged_changes
+                                                    && ui.button("Unstage Changes").clicked()
+                                                {
+                                                    self.command_bus.push(
+                                                        Command::UnstageFileChange(path.clone()),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                if tab_state.has_source_control_changes
+                                                    && ui.button("Discard Changes").clicked()
+                                                {
+                                                    self.command_bus.push(
+                                                        Command::DiscardFileChanges(path.clone()),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                if tab_state.has_source_control_changes
+                                                    && ui
+                                                        .button("Reveal in Source Control")
+                                                        .clicked()
+                                                {
+                                                    self.command_bus.push(
+                                                        Command::RevealFileInSourceControl(
+                                                            path.clone(),
+                                                        ),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                if ui.button("Reveal in Explorer").clicked() {
+                                                    self.command_bus.push(
+                                                        Command::RevealFileInExplorer(path.clone()),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                if ui.button("Compare with HEAD").clicked() {
+                                                    self.command_bus.push(
+                                                        Command::OpenFileHeadChanges(path.clone()),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                if tab_state.has_head_revision
+                                                    && ui.button("Open File at HEAD").clicked()
+                                                {
+                                                    self.command_bus.push(
+                                                        Command::OpenFileHeadRevision(path.clone()),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                if tab_state.has_index_revision
+                                                    && ui.button("Open File at Index").clicked()
+                                                {
+                                                    self.command_bus.push(
+                                                        Command::OpenFileIndexRevision(
+                                                            path.clone(),
+                                                        ),
+                                                    );
+                                                    ui.close();
+                                                }
+                                                visit_file_tab_path_context_actions(
+                                                    tab_state.file_path.is_some(),
+                                                    |action| {
+                                                        if ui
+                                                            .button(
+                                                                file_tab_path_context_action_label(
+                                                                    action,
+                                                                ),
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            match action {
                                             FileTabPathContextActionKind::CopyPath => {
                                                 self.status = copy_path_to_clipboard(
                                                     ui.ctx(),
@@ -352,60 +415,68 @@ impl KuroyaApp {
                                                 }
                                             }
                                         }
-                                        ui.close();
-                                    }
-                                },
-                            );
-                        }
-                        if ui.button("Save As").clicked() {
-                            self.begin_save_as(id);
-                            ui.close();
-                        }
-                        if ui.button("Split Right").clicked() {
-                            self.split_buffer_right(id);
-                            ui.close();
-                        }
-                        if ui.button("Reset Split Widths").clicked() {
-                            self.reset_pane_weights();
-                            ui.close();
-                        }
-                        if ui.button("Close").clicked() {
-                            self.request_close_buffer(id);
-                            ui.close();
-                        }
-                        if ui.button("Close Others").clicked() {
-                            self.close_other_buffers(id);
-                            ui.close();
-                        }
-                    }
-                });
-            }
+                                                            ui.close();
+                                                        }
+                                                    },
+                                                );
+                                            }
+                                            if ui.button("Save As").clicked() {
+                                                self.begin_save_as(id);
+                                                ui.close();
+                                            }
+                                            if ui.button("Split Right").clicked() {
+                                                self.split_buffer_right(id);
+                                                ui.close();
+                                            }
+                                            if ui.button("Reset Split Widths").clicked() {
+                                                self.reset_pane_weights();
+                                                ui.close();
+                                            }
+                                            if ui.button("Close").clicked() {
+                                                self.request_close_buffer(id);
+                                                ui.close();
+                                            }
+                                            if ui.button("Close Others").clicked() {
+                                                self.close_other_buffers(id);
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                        });
+                },
+            );
 
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                ui.add_space(6.0);
-                if icon_button(ui, IconKind::Command, "Command palette").clicked() {
-                    self.command_bus.push(Command::ToggleCommandPalette);
-                }
-                if icon_button(ui, IconKind::Search, "Quick open").clicked() {
-                    self.command_bus.push(Command::ToggleQuickOpen);
-                }
-                if icon_button(ui, IconKind::GitBranch, "Source control").clicked() {
-                    self.command_bus.push(Command::ToggleSourceControl);
-                }
-                if let Some(badge) = git_status_count_badge_label(
-                    self.git.counts(),
-                    self.settings.scm_count_badge,
-                    self.settings.git_count_badge,
-                ) {
-                    ui.label(RichText::new(badge).small());
-                }
-                if icon_button(ui, IconKind::Terminal, "Toggle terminal").clicked() {
-                    self.command_bus.push(Command::ToggleTerminal);
-                }
-                if icon_button(ui, IconKind::Settings, "Settings").clicked() {
-                    self.command_bus.push(Command::ToggleSettingsPanel);
-                }
-            });
+            ui.allocate_ui_with_layout(
+                vec2(actions_width, TAB_ROW_HEIGHT),
+                egui::Layout::right_to_left(Align::Center),
+                |ui| {
+                    ui.add_space(6.0);
+                    if icon_button(ui, IconKind::Command, "Command palette").clicked() {
+                        self.command_bus.push(Command::ToggleCommandPalette);
+                    }
+                    if icon_button(ui, IconKind::Search, "Quick open").clicked() {
+                        self.command_bus.push(Command::ToggleQuickOpen);
+                    }
+                    if icon_button(ui, IconKind::GitBranch, "Source control").clicked() {
+                        self.command_bus.push(Command::ToggleSourceControl);
+                    }
+                    if let Some(badge) = git_status_count_badge_label(
+                        self.git.counts(),
+                        self.settings.scm_count_badge,
+                        self.settings.git_count_badge,
+                    ) {
+                        ui.label(RichText::new(badge).small());
+                    }
+                    if icon_button(ui, IconKind::Terminal, "Toggle terminal").clicked() {
+                        self.command_bus.push(Command::ToggleTerminal);
+                    }
+                    if icon_button(ui, IconKind::Settings, "Settings").clicked() {
+                        self.command_bus.push(Command::ToggleSettingsPanel);
+                    }
+                },
+            );
         });
     }
 
@@ -1286,8 +1357,15 @@ fn responsive_tab_max_width(available_width: f32, tab_count: usize) -> f32 {
         return TAB_MIN_WIDTH;
     }
 
-    let tab_area_width = (available_width - TAB_ACTIONS_RESERVED_WIDTH).max(TAB_MIN_WIDTH);
+    let tab_area_width = available_width.max(TAB_MIN_WIDTH);
     (tab_area_width / tab_count as f32).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+}
+
+fn responsive_tab_actions_width(available_width: f32) -> f32 {
+    if !available_width.is_finite() {
+        return TAB_ACTIONS_RESERVED_WIDTH;
+    }
+    available_width.clamp(0.0, TAB_ACTIONS_RESERVED_WIDTH)
 }
 
 #[cfg(test)]

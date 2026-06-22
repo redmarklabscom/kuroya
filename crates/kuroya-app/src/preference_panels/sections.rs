@@ -3,9 +3,9 @@ use eframe::egui;
 use kuroya_core::EditorSettings;
 use std::ops::RangeInclusive;
 
+mod appearance;
 mod editor;
 mod files;
-mod font;
 mod general;
 mod terminal;
 mod vim;
@@ -15,9 +15,15 @@ pub(super) const SETTINGS_SECTION_EDITOR: usize = 1;
 pub(super) const SETTINGS_SECTION_VIM: usize = 2;
 pub(super) const SETTINGS_SECTION_TERMINAL: usize = 3;
 pub(super) const SETTINGS_SECTION_FILES: usize = 4;
-pub(super) const SETTINGS_SECTION_FONTS: usize = 5;
-pub(super) const SETTINGS_SECTIONS: [&str; 6] =
-    ["General", "Editor", "Vim", "Terminal", "Files", "Fonts"];
+pub(super) const SETTINGS_SECTION_APPEARANCE: usize = 5;
+pub(super) const SETTINGS_SECTIONS: [&str; 6] = [
+    "General",
+    "Editor",
+    "Vim",
+    "Terminal",
+    "Files",
+    "Appearance",
+];
 pub(super) const SETTINGS_DISPLAY_TEXT_MAX_CHARS: usize = 240;
 pub(super) const SETTINGS_TEXT_INPUT_MAX_CHARS: usize = 8_192;
 
@@ -38,7 +44,7 @@ pub(super) const SETTINGS_TARGET_TERMINAL_COLOR: &str = "settings.terminal.color
 pub(super) const SETTINGS_TARGET_TERMINAL_INTERACTION: &str = "settings.terminal.interaction";
 pub(super) const SETTINGS_TARGET_FILES_SAVE_ACTIONS: &str = "settings.files.save_actions";
 pub(super) const SETTINGS_TARGET_FILES_SAVE_CLEANUP: &str = "settings.files.save_cleanup";
-pub(super) const SETTINGS_TARGET_FONTS: &str = "settings.fonts";
+pub(super) const SETTINGS_TARGET_APPEARANCE: &str = "settings.appearance";
 
 pub(super) struct SettingsHighlightState<'a> {
     active_target: Option<&'a str>,
@@ -79,15 +85,16 @@ impl<'a> SettingsHighlightState<'a> {
         }
 
         if self.active_target.is_some_and(|active| active == target) {
+            let warning = ui.visuals().warn_fg_color;
             ui.painter().rect_filled(
                 rect,
                 egui::CornerRadius::same(4),
-                egui::Color32::from_rgba_premultiplied(224, 177, 95, 28),
+                egui::Color32::from_rgba_premultiplied(warning.r(), warning.g(), warning.b(), 28),
             );
             ui.painter().rect_stroke(
                 rect,
                 egui::CornerRadius::same(4),
-                egui::Stroke::new(1.0, egui::Color32::from_rgb(224, 177, 95)),
+                egui::Stroke::new(1.0, warning),
                 egui::StrokeKind::Inside,
             );
         }
@@ -127,13 +134,14 @@ pub(super) fn render_settings_sidebar(ui: &mut egui::Ui, selected: &mut usize) {
     let sidebar_focused = ui.memory(|memory| {
         memory.has_focus(focus_id) || row_ids.iter().any(|id| memory.has_focus(*id))
     });
+    let navigation_page_step = selection_page_step(row_height, ui.available_height());
     let request_selected_focus = sidebar_focused
         && ui.input(|input| {
             handle_list_navigation_keys(
                 input,
                 selected,
                 SETTINGS_SECTIONS.len(),
-                selection_page_step(row_height, ui.available_height()),
+                navigation_page_step,
             )
         });
 
@@ -160,10 +168,13 @@ pub(super) fn render_settings_sidebar(ui: &mut egui::Ui, selected: &mut usize) {
         });
 
         if is_selected || response.hovered() || has_focus {
+            let visuals = ui.visuals();
             let fill = if is_selected {
-                egui::Color32::from_rgb(55, 55, 58)
+                visuals.selection.bg_fill
+            } else if has_focus {
+                visuals.widgets.active.bg_fill
             } else {
-                egui::Color32::from_rgb(45, 45, 48)
+                visuals.widgets.hovered.bg_fill
             };
             ui.painter()
                 .rect_filled(rect, egui::CornerRadius::same(4), fill);
@@ -174,7 +185,7 @@ pub(super) fn render_settings_sidebar(ui: &mut egui::Ui, selected: &mut usize) {
             ui.painter().rect_filled(
                 marker,
                 egui::CornerRadius::same(1),
-                ui.visuals().weak_text_color(),
+                ui.visuals().selection.stroke.color,
             );
         }
         if has_focus {
@@ -456,6 +467,14 @@ pub(super) fn render_vim_settings(
     vim::render_vim_settings(ui, draft, highlight);
 }
 
+pub(super) fn vim_key_capture_active(ctx: &egui::Context) -> bool {
+    vim::vim_key_capture_active(ctx)
+}
+
+pub(super) fn vim_key_capture_clear(ctx: &egui::Context) {
+    vim::vim_key_capture_clear(ctx);
+}
+
 pub(super) fn render_terminal_settings(
     ui: &mut egui::Ui,
     draft: &mut EditorSettings,
@@ -472,24 +491,32 @@ pub(super) fn render_files_settings(
     files::render_files_settings_with_highlight(ui, draft, highlight);
 }
 
-pub(super) fn render_font_settings(
+pub(super) fn render_appearance_settings(
     ui: &mut egui::Ui,
+    draft: &mut EditorSettings,
+    workspace_root: &std::path::Path,
+    plugin_themes: &kuroya_core::PluginThemeRegistry,
     editor_font_path: &str,
     ui_font_path: &str,
     choose_editor_font: &mut bool,
     clear_editor_font: &mut bool,
     choose_ui_font: &mut bool,
     clear_ui_font: &mut bool,
+    status: &mut Option<String>,
     highlight: &mut SettingsHighlightState<'_>,
 ) {
-    font::render_font_settings_with_highlight(
+    appearance::render_appearance_settings_with_highlight(
         ui,
+        draft,
+        workspace_root,
+        plugin_themes,
         editor_font_path,
         ui_font_path,
         choose_editor_font,
         clear_editor_font,
         choose_ui_font,
         clear_ui_font,
+        status,
         highlight,
     );
 }
@@ -497,7 +524,7 @@ pub(super) fn render_font_settings(
 #[cfg(test)]
 mod tests {
     use super::{
-        SETTINGS_DISPLAY_TEXT_MAX_CHARS, SETTINGS_SECTION_EDITOR, SETTINGS_SECTION_FONTS,
+        SETTINGS_DISPLAY_TEXT_MAX_CHARS, SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_EDITOR,
         SETTINGS_SECTION_GENERAL, SETTINGS_TEXT_INPUT_MAX_CHARS, bounded_settings_display_text,
         bounded_settings_multiline_input, bounded_singleline_text_edit,
         finite_f32_drag_display_value, guarded_f32_drag_value, render_settings_sidebar,
@@ -538,7 +565,7 @@ mod tests {
 
         run_settings_sidebar_frame(&ctx, &mut selected, None, None);
 
-        assert_eq!(selected, SETTINGS_SECTION_FONTS);
+        assert_eq!(selected, SETTINGS_SECTION_APPEARANCE);
     }
 
     #[test]

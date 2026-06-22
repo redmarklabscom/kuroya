@@ -4,7 +4,7 @@ use crate::{
     path_display::{compact_path, sanitized_display_label_cow},
     popup_buttons::{PopupButtonKind, popup_button},
 };
-use eframe::egui::{self, Color32, Context, Key, RichText, TextEdit};
+use eframe::egui::{self, Context, Key, RichText, TextEdit};
 use std::{borrow::Cow, path::Path};
 
 const LSP_RENAME_POPUP_PATH_LABEL_MAX_CHARS: usize = 56;
@@ -48,7 +48,7 @@ impl KuroyaApp {
                 ui.label(
                     RichText::new(status_line)
                         .small()
-                        .color(Color32::from_rgb(126, 136, 150)),
+                        .color(ui.visuals().weak_text_color()),
                 );
             });
 

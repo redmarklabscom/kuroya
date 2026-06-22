@@ -189,7 +189,7 @@ impl KuroyaApp {
                     ui.label(
                         RichText::new(count_label(self.workspace_tasks.len(), "task", "tasks"))
                             .small()
-                            .color(Color32::from_rgb(126, 136, 150)),
+                            .color(ui.visuals().weak_text_color()),
                     );
                 });
             });

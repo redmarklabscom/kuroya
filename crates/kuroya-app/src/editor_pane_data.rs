@@ -6,6 +6,7 @@ use crate::{
         diagnostic_tag_spans_for_buffer, document_highlight_spans_for_buffer,
         semantic_token_spans_for_buffer,
     },
+    editor_vim_key_events::{vim_effective_cursor_style, vim_search_highlight_ranges_for_buffer},
     file_runtime::file_path_open_buffer_or_known_openable,
     folding::indentation_folding_ranges,
     folding::{FoldedRange, visible_line_indices},
@@ -16,8 +17,10 @@ use crate::{
     },
     session_state::editor_row_height,
     syntax_tree_cache::TreeSitterInjection,
+    theme::theme_palette,
     transient_state::EditorImePreedit,
 };
+use eframe::egui::Color32;
 use kuroya_core::settings::clamp_editor_font_size;
 use kuroya_core::{
     BufferId, DiagnosticSeverity, EditorAccessibilitySupport, EditorBracketPairGuideMode,
@@ -26,10 +29,10 @@ use kuroya_core::{
     EditorHighlightActiveIndentation, EditorLightbulbMode, EditorLineDecorationsWidth,
     EditorLineNumbers, EditorMatchBrackets, EditorMinimapAutohide, EditorMinimapShowSlider,
     EditorMinimapSide, EditorMinimapSize, EditorMouseMiddleClickAction, EditorMouseStyle,
-    EditorMultiCursorModifier, EditorOccurrencesHighlight, EditorRenderFinalNewline,
-    EditorRenderLineHighlight, EditorRenderValidationDecorations, EditorRenderWhitespace,
-    EditorShowFoldingControls, EditorWordWrap, GitBlameLine, GitChangeStage, GitLineChangeKind,
-    LanguageId, LspCodeLens, LspFoldingRange, LspInlayHint, MergeConflict, ScmDiffDecorations,
+    EditorMultiCursorModifier, EditorRenderFinalNewline, EditorRenderLineHighlight,
+    EditorRenderValidationDecorations, EditorRenderWhitespace, EditorShowFoldingControls,
+    EditorWordWrap, GitBlameLine, GitChangeStage, GitLineChangeKind, LanguageId, LspCodeLens,
+    LspFoldingRange, LspInlayHint, MergeConflict, ScmDiffDecorations,
     ScmDiffDecorationsGutterAction, ScmDiffDecorationsGutterPattern,
     ScmDiffDecorationsGutterVisibility, Selection, TextBuffer,
     buffer::{BracketPairGuide, CursorPosition},
@@ -132,8 +135,7 @@ pub(crate) struct EditorPaneData {
     pub(crate) cursor_positions: Vec<CursorPosition>,
     pub(crate) selections: Vec<Selection>,
     pub(crate) find_matches: Vec<Range<usize>>,
-    pub(crate) occurrence_highlight_ranges: Vec<Range<usize>>,
-    pub(crate) selection_highlight_ranges: Vec<Range<usize>>,
+    pub(crate) selection_bg_fill: Color32,
     pub(crate) document_highlight_ranges: Vec<DocumentHighlightSpan>,
     pub(crate) semantic_token_ranges: Vec<SemanticTokenSpan>,
     pub(crate) syntax_injections: Vec<TreeSitterInjection>,
@@ -265,37 +267,16 @@ impl KuroyaApp {
             self.settings.line_decorations_width,
             char_width,
         );
-        let defer_match_highlights =
-            self.editor_defer_match_highlights_for_buffer == Some(buffer_id);
-        if defer_match_highlights {
-            self.editor_defer_match_highlights_for_buffer = None;
-        }
-        let (cursor_positions, selections, selection_highlight_ranges, occurrence_highlight_ranges) = {
+        let (cursor_positions, selections) = {
             let buffer = &self.buffers[buffer_index];
-            (
-                buffer.cursor_positions(),
-                buffer.selections().to_vec(),
-                if large_file_mode || defer_match_highlights {
-                    Vec::new()
-                } else {
-                    self.editor_match_highlight_cache
-                        .selection_highlight_ranges(
-                            buffer,
-                            self.settings.selection_highlight,
-                            self.settings.selection_highlight_max_length,
-                            self.settings.selection_highlight_multiline,
-                        )
-                },
-                if large_file_mode || defer_match_highlights {
-                    Vec::new()
-                } else {
-                    self.editor_match_highlight_cache
-                        .occurrence_highlight_ranges(buffer, self.settings.occurrences_highlight)
-                },
-            )
+            (buffer.cursor_positions(), buffer.selections().to_vec())
         };
         let find_matches = if editor_find_matches_enabled(self.buffer_find_open, large_file_mode) {
             self.find_matches_for_buffer_index(buffer_index)
+        } else if editor_vim_search_matches_enabled(self.settings.vim_keybindings, large_file_mode)
+        {
+            let buffer = &self.buffers[buffer_index];
+            vim_search_highlight_ranges_for_buffer(buffer)
         } else {
             Vec::new()
         };
@@ -544,6 +525,8 @@ impl KuroyaApp {
         let diff_refresh_actions = diff_source.is_some();
         let diff_swap_actions = diff_source.is_some_and(|source| source.base_path.is_some());
         let word_wrap = editor_word_wrap_for_buffer(&self.settings, buffer.language());
+        let palette = theme_palette(&self.settings.theme);
+        let selection_bg_fill = palette.selection;
         let minimap_section_headers = if show_minimap {
             self.minimap_section_header_cache.headers_for(
                 buffer,
@@ -651,7 +634,12 @@ impl KuroyaApp {
             default_color_decorators: self.settings.default_color_decorators,
             tab_width: self.settings.tab_width.max(1),
             cursor_smooth_caret_animation: self.settings.cursor_smooth_caret_animation,
-            cursor_style: self.settings.cursor_style,
+            cursor_style: vim_effective_cursor_style(
+                self.settings.cursor_style,
+                self.settings.vim_keybindings,
+                self.editor_vim_mode,
+                self.editor_vim_pending_key,
+            ),
             cursor_blinking: self.settings.cursor_blinking,
             cursor_width: clamp_editor_cursor_width(self.settings.cursor_width),
             cursor_height: clamp_editor_cursor_height(self.settings.cursor_height),
@@ -668,8 +656,7 @@ impl KuroyaApp {
             cursor_positions,
             selections,
             find_matches,
-            occurrence_highlight_ranges,
-            selection_highlight_ranges,
+            selection_bg_fill,
             document_highlight_ranges,
             semantic_token_ranges,
             syntax_injections,
@@ -757,8 +744,6 @@ impl KuroyaApp {
     ) {
         if performance_mode {
             self.buffer_find_cache.clear_for_buffer(buffer_id);
-            self.editor_match_highlight_cache
-                .clear_for_buffer(buffer_id);
         }
         if performance_mode || bracket_scan_protection {
             self.editor_bracket_overlay_cache
@@ -872,6 +857,10 @@ fn editor_sticky_scroll_max_line_count(setting_enabled: bool, max_line_count: us
 
 fn editor_find_matches_enabled(find_open: bool, large_file_mode: bool) -> bool {
     find_open && !large_file_mode
+}
+
+fn editor_vim_search_matches_enabled(vim_keybindings: bool, large_file_mode: bool) -> bool {
+    vim_keybindings && !large_file_mode
 }
 
 fn editor_code_lens_enabled(setting_enabled: bool, large_file_mode: bool) -> bool {
@@ -1031,74 +1020,6 @@ fn editor_validation_decorations_enabled(
     large_file_mode: bool,
 ) -> bool {
     !large_file_mode && setting.visible(read_only)
-}
-
-pub(crate) fn occurrence_highlight_ranges_for_buffer(
-    buffer: &TextBuffer,
-    mode: EditorOccurrencesHighlight,
-) -> Vec<Range<usize>> {
-    if !mode.shows_current_file()
-        || buffer
-            .selections()
-            .iter()
-            .any(|selection| !selection.is_caret())
-    {
-        return Vec::new();
-    }
-    let Some(word_range) = buffer.word_range_at_cursor() else {
-        return Vec::new();
-    };
-    let Some(query) = buffer.text_range(word_range) else {
-        return Vec::new();
-    };
-    if query.trim().is_empty() {
-        return Vec::new();
-    }
-
-    buffer.find_matches_with_options(&query, 1_000, true, true)
-}
-
-pub(crate) fn selection_highlight_ranges_for_buffer(
-    buffer: &TextBuffer,
-    enabled: bool,
-    max_length: usize,
-    multiline: bool,
-) -> Vec<Range<usize>> {
-    if !enabled {
-        return Vec::new();
-    }
-    let Some(selection_range) = buffer
-        .selections()
-        .iter()
-        .rev()
-        .map(|selection| selection.range())
-        .find(|range| range.start != range.end)
-    else {
-        return Vec::new();
-    };
-    if max_length > 0 && selection_range.end.saturating_sub(selection_range.start) > max_length {
-        return Vec::new();
-    }
-
-    let Some(query) = buffer.text_range(selection_range.clone()) else {
-        return Vec::new();
-    };
-    if query.trim().is_empty() {
-        return Vec::new();
-    }
-    if !multiline && query.contains(['\n', '\r']) {
-        return Vec::new();
-    }
-    let query_len = query.chars().count();
-    if max_length > 0 && query_len > max_length {
-        return Vec::new();
-    }
-
-    buffer
-        .find_matches_with_options(&query, 1_000, true, false)
-        .into_iter()
-        .filter(|range| *range != selection_range)
-        .collect()
 }
 
 pub(crate) fn editor_gutter_width(

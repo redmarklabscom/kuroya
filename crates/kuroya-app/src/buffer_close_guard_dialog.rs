@@ -5,7 +5,7 @@ use crate::{
     popup_buttons::{PopupButtonKind, popup_button, popup_button_enabled},
     save_lifecycle::protected_preview_save_block_reason_for_buffer,
 };
-use eframe::egui::{self, Align, Color32, Context, Key, RichText};
+use eframe::egui::{self, Align, Context, Key, RichText};
 
 impl KuroyaApp {
     pub(crate) fn render_unsaved_close(&mut self, ctx: &Context) {
@@ -42,7 +42,7 @@ impl KuroyaApp {
                     ui.label(
                         RichText::new(close_guard_save_block_message(reason))
                             .small()
-                            .color(Color32::YELLOW),
+                            .color(ui.visuals().warn_fg_color),
                     );
                 }
 

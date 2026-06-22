@@ -1,14 +1,15 @@
 use super::{
     MAX_MINIMAP_LINE_LENGTH_CACHES, MAX_MINIMAP_LINE_SAMPLES, MinimapLineLengthCache,
-    MinimapMarkerLines, MinimapSectionHeaderCache, minimap_content_line_span,
-    minimap_first_visible_line, minimap_line_change_for_sample, minimap_line_len,
-    minimap_line_width, minimap_marker_line_bounds, minimap_render_size, minimap_sample_count,
-    minimap_section_header_char_advance, minimap_section_header_display_text,
-    minimap_section_header_for_sample, minimap_section_header_scan_allowed, minimap_slider_visible,
-    minimap_stroke_width, minimap_visible_line_count,
+    MinimapMarkerLines, MinimapSectionHeaderCache, minimap_background_color,
+    minimap_content_line_span, minimap_cursor_line_color, minimap_default_line_color,
+    minimap_find_match_line_color, minimap_first_visible_line, minimap_line_change_for_sample,
+    minimap_line_len, minimap_line_width, minimap_marker_line_bounds, minimap_render_size,
+    minimap_sample_count, minimap_section_header_char_advance, minimap_section_header_display_text,
+    minimap_section_header_for_sample, minimap_section_header_scan_allowed, minimap_slider_color,
+    minimap_slider_visible, minimap_stroke_width, minimap_visible_line_count,
 };
 use crate::large_file_mode::{LARGE_FILE_MODE_MAX_BYTES, LARGE_FILE_MODE_MAX_LINES};
-use egui::{Rect, pos2, vec2};
+use egui::{Color32, Rect, pos2, vec2};
 use kuroya_core::{
     EditorMinimapShowSlider, GitLineChangeKind, MAX_EDITOR_MINIMAP_MAX_COLUMN, TextBuffer,
 };
@@ -36,6 +37,34 @@ fn minimap_slider_visibility_follows_setting_and_interaction() {
         false,
         true
     ));
+}
+
+#[test]
+fn minimap_chrome_colors_follow_theme_visuals() {
+    let mut visuals = egui::Visuals::light();
+    visuals.code_bg_color = Color32::from_rgb(224, 231, 240);
+    visuals.widgets.active.bg_fill = Color32::from_rgb(208, 215, 224);
+    visuals.widgets.inactive.bg_stroke.color = Color32::from_rgb(188, 198, 210);
+    visuals.warn_fg_color = Color32::from_rgb(161, 104, 24);
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(218, 225, 233);
+
+    assert_eq!(minimap_background_color(&visuals), visuals.code_bg_color);
+    assert_eq!(
+        minimap_cursor_line_color(&visuals),
+        visuals.widgets.active.bg_fill
+    );
+    assert_eq!(
+        minimap_default_line_color(&visuals),
+        visuals.widgets.inactive.bg_stroke.color
+    );
+    assert_eq!(
+        minimap_find_match_line_color(&visuals),
+        visuals.warn_fg_color
+    );
+    assert_eq!(
+        minimap_slider_color(&visuals, true, false),
+        Color32::from_rgba_unmultiplied(218, 225, 233, 180)
+    );
 }
 
 #[test]

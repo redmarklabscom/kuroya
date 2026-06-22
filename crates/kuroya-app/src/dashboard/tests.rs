@@ -1,8 +1,9 @@
 use super::{
-    DASHBOARD_DETAIL_MAX_CHARS, DASHBOARD_LABEL_MAX_CHARS, DASHBOARD_WORKSPACE_TASK_LIMIT,
-    DASHBOARD_WORKSPACE_TASK_SCAN_MAX, DashboardDisplayText, DashboardDisplayTextCache,
-    dashboard_file_detail, dashboard_file_label, dashboard_path_detail, dashboard_project_label,
-    dashboard_recent_candidate_scan_limit, dashboard_recent_files,
+    DASHBOARD_DETAIL_MAX_CHARS, DASHBOARD_LABEL_MAX_CHARS, DASHBOARD_LOGO_BYTES,
+    DASHBOARD_WORKSPACE_TASK_LIMIT, DASHBOARD_WORKSPACE_TASK_SCAN_MAX, DashboardDisplayText,
+    DashboardDisplayTextCache, dashboard_file_detail, dashboard_file_label,
+    dashboard_logo_color_image, dashboard_logo_size_for_test, dashboard_path_detail,
+    dashboard_project_label, dashboard_recent_candidate_scan_limit, dashboard_recent_files,
     dashboard_recent_files_empty_label, dashboard_recent_files_with_display_cache,
     dashboard_recent_files_with_file_probe, dashboard_recent_projects,
     dashboard_recent_projects_empty_label, dashboard_recent_projects_with_dir_probe,
@@ -24,6 +25,50 @@ use std::{
     process,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[test]
+fn dashboard_logo_asset_is_transparent_square_mark() {
+    let image = image::load_from_memory_with_format(DASHBOARD_LOGO_BYTES, image::ImageFormat::Png)
+        .expect("dashboard logo should decode as png")
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    let pixels = image.as_raw().chunks_exact(4);
+    let transparent_pixels = pixels.clone().filter(|pixel| pixel[3] == 0).count();
+
+    assert_eq!((width, height), (320, 320));
+    assert!(dashboard_logo_size_for_test() >= 64.0);
+    for (x, y) in [
+        (0, 0),
+        (width - 1, 0),
+        (0, height - 1),
+        (width - 1, height - 1),
+    ] {
+        assert_eq!(image.get_pixel(x, y)[3], 0);
+    }
+    assert!(transparent_pixels > (width as usize * height as usize) / 2);
+    assert!(pixels.clone().any(|pixel| pixel[3] == 255));
+}
+
+#[test]
+fn dashboard_logo_color_image_matches_render_texture_input() {
+    let image = dashboard_logo_color_image().expect("dashboard logo color image should decode");
+    let visible_pixels = image.pixels.iter().filter(|pixel| pixel.a() > 0).count();
+
+    assert_eq!(image.size, [320, 320]);
+    assert!(visible_pixels > 20_000);
+    assert!(
+        image
+            .pixels
+            .iter()
+            .any(|pixel| pixel.r() > 180 && pixel.g() > 180 && pixel.b() > 180)
+    );
+    assert!(
+        image
+            .pixels
+            .iter()
+            .any(|pixel| pixel.b() > pixel.r().saturating_add(40))
+    );
+}
 
 #[test]
 fn dashboard_recent_files_are_workspace_scoped_deduped_and_bounded() {

@@ -5,7 +5,7 @@ use crate::{
     popup_buttons::{PopupButtonKind, popup_button},
     ui_state::{handle_list_navigation_keys, selection_page_step},
 };
-use eframe::egui::{self, Align, Color32, Context, Key, RichText, TextEdit};
+use eframe::egui::{self, Align, Context, Key, RichText, TextEdit};
 use std::{borrow::Cow, fmt::Write as _};
 
 mod results;
@@ -16,7 +16,6 @@ const WORKSPACE_SYMBOL_NO_QUERY_LABEL: &str = "No query submitted";
 const WORKSPACE_SYMBOL_QUERY_LABEL_PREFIX: &str = "Query: `";
 const WORKSPACE_SYMBOL_QUERY_LABEL_SUFFIX: &str = "`";
 const WORKSPACE_SYMBOL_QUERY_LABEL_FALLBACK: &str = "<empty>";
-const WORKSPACE_SYMBOL_STATUS_TEXT_COLOR: Color32 = Color32::from_rgb(126, 136, 150);
 const WORKSPACE_SYMBOL_RESULT_COUNT_LABELS: [&str; 17] = [
     "0 results",
     "1 results",
@@ -155,7 +154,7 @@ fn workspace_symbol_status_label(ui: &mut egui::Ui, text: Cow<'_, str>) {
     ui.label(
         RichText::new(text)
             .small()
-            .color(WORKSPACE_SYMBOL_STATUS_TEXT_COLOR),
+            .color(ui.visuals().weak_text_color()),
     );
 }
 

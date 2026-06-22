@@ -1,5 +1,3 @@
-#![allow(unused_imports)]
-
 pub(super) use super::super::*;
 pub(super) use crate::{
     KuroyaApp,
@@ -12,9 +10,8 @@ pub(super) use crate::{
     terminal::TerminalPane,
 };
 pub(super) use kuroya_core::{
-    EditorSettings, LspRequestId, LspTextEdit, LspWorkspaceDocumentChange,
-    LspWorkspaceResourceOperation, TextBuffer, Workspace, lsp::path_to_file_uri,
-    parse_apply_workspace_edit_request,
+    EditorSettings, LspRequestId, LspTextEdit, LspWorkspaceDocumentChange, TextBuffer, Workspace,
+    lsp::path_to_file_uri, parse_apply_workspace_edit_request,
 };
 pub(super) use serde_json::json;
 pub(super) use std::{

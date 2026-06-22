@@ -92,21 +92,6 @@ pub enum EditorExperimentalWhitespaceRendering {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum EditorOccurrencesHighlight {
-    Off,
-    #[default]
-    SingleFile,
-    MultiFile,
-}
-
-impl EditorOccurrencesHighlight {
-    pub fn shows_current_file(self) -> bool {
-        !matches!(self, Self::Off)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub enum EditorLightbulbMode {
     Off,
     On,

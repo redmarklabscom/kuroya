@@ -1,10 +1,10 @@
 use super::send_buffer_synced;
 use crate::ui_event_channel::Sender;
 use crate::{
-    lsp_client::wire::{lsp_version, write_message},
+    lsp_client::wire::{lsp_version, write_did_change_full_document},
     ui_events::UiEvent,
 };
-use kuroya_core::{BufferId, LspWireMessage, TextSnapshot};
+use kuroya_core::{BufferId, TextSnapshot};
 use std::path::PathBuf;
 use tokio::process::ChildStdin;
 
@@ -17,12 +17,7 @@ pub(in crate::lsp_client::command_dispatch::document_sync::open_change) async fn
     ui_tx: &Sender<UiEvent>,
 ) -> bool {
     let wire_version = lsp_version(version);
-    let text = text.text();
-    let write_result = write_message(
-        writer,
-        &LspWireMessage::did_change(&path, wire_version, &text).to_json(),
-    )
-    .await;
+    let write_result = write_did_change_full_document(writer, &path, wire_version, &text).await;
     if write_result.is_ok() {
         send_buffer_synced(id, path, version, ui_tx);
         true

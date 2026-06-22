@@ -4,9 +4,8 @@ use crate::{
     ui_event_handler::{
         background::{
             handle_cached_index_event, handle_diagnostics_computed_event, handle_git_scanned_event,
-            handle_indexed_event, handle_project_search_indexed_event,
-            handle_search_finished_event, handle_workspace_plugins_failed_event,
-            handle_workspace_plugins_loaded_event,
+            handle_indexed_event, handle_search_finished_event, handle_search_progress_event,
+            handle_workspace_plugins_failed_event, handle_workspace_plugins_loaded_event,
         },
         session::{handle_session_save_failed_event, handle_session_saved_event},
     },
@@ -55,12 +54,11 @@ impl KuroyaApp {
                     request_id,
                     root,
                     index,
-                    search_index,
                 } => {
                     let root_is_current = workspace_event_matches(&self.workspace.root, &root);
                     let spawn_queued_index =
                         root_is_current && self.finish_workspace_index_request(request_id);
-                    if !handle_indexed_event(self, request_id, root, index, search_index) {
+                    if !handle_indexed_event(self, request_id, root, index) {
                         if spawn_queued_index {
                             self.spawn_index();
                         }
@@ -68,14 +66,9 @@ impl KuroyaApp {
                     }
                     if spawn_queued_index {
                         self.spawn_index();
+                    } else if self.project_search_waiting_for_index() {
+                        self.spawn_project_search();
                     }
-                }
-                UiEvent::ProjectSearchIndexed {
-                    request_id,
-                    root,
-                    search_index,
-                } => {
-                    handle_project_search_indexed_event(self, request_id, root, search_index);
                 }
                 event @ (UiEvent::FileLoaded { .. }
                 | UiEvent::ImageFileLoaded { .. }
@@ -230,6 +223,32 @@ impl KuroyaApp {
                         include_globs,
                         exclude_globs,
                         result,
+                    ) {
+                        continue;
+                    }
+                }
+                UiEvent::SearchProgress {
+                    request_id,
+                    index_generation,
+                    workspace_root,
+                    query,
+                    case_sensitive,
+                    whole_word,
+                    include_globs,
+                    exclude_globs,
+                    progress,
+                } => {
+                    if !handle_search_progress_event(
+                        self,
+                        request_id,
+                        index_generation,
+                        workspace_root,
+                        query,
+                        case_sensitive,
+                        whole_word,
+                        include_globs,
+                        exclude_globs,
+                        progress,
                     ) {
                         continue;
                     }
@@ -850,6 +869,17 @@ impl KuroyaApp {
                     }
                     if spawn_queued_plugin_discovery {
                         self.spawn_plugin_discovery();
+                    }
+                }
+                UiEvent::PluginCommandFinished {
+                    root,
+                    generation,
+                    plugin_id,
+                    command_id,
+                    result,
+                } => {
+                    if self.workspace_event_is_current(&root, generation) {
+                        self.apply_plugin_command_finished(plugin_id, command_id, result);
                     }
                 }
                 UiEvent::DiagnosticsComputed {

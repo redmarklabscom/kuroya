@@ -15,11 +15,11 @@ use crate::{
     workspace_state::PaneId,
 };
 use eframe::egui::{
-    self, Align, Align2, Color32, FontFamily, FontId, Key, Layout, PointerButton, Rect, ScrollArea,
+    self, Align, Align2, FontFamily, FontId, Key, Layout, PointerButton, Rect, ScrollArea,
     UiBuilder, pos2, vec2,
 };
 use kuroya_core::settings::clamp_editor_font_size;
-use kuroya_core::{BufferId, EditorCursorSurroundingLinesStyle};
+use kuroya_core::{BufferId, EditorCursorSurroundingLinesStyle, buffer::CursorPosition};
 use layout::{
     editor_content_rect_with_padding, editor_horizontal_scroll_enabled, editor_minimap_visible,
     editor_minimap_width, editor_mouse_wheel_zoom_delta_y, editor_mouse_wheel_zoom_modifier,
@@ -34,6 +34,7 @@ use overview::{
 };
 use overview::{overview_ruler_cursor_lines, paint_scm_diff_overview_ruler};
 use rows::render_visible_editor_rows;
+use std::ops::Range;
 use std::{collections::BTreeMap, time::Duration};
 use sticky::{
     first_visible_row_from_scroll, paint_sticky_scroll_row, sticky_scroll_lines,
@@ -73,7 +74,11 @@ impl KuroyaApp {
         data.row_height = editor_viewport_row_height(data.row_height);
         let base_line_total = data.visible_line_count.max(1);
         self.refresh_editor_selection_clipboard_from_buffer(buffer_index);
-        let active_find_match = self.buffer_find_match;
+        let active_find_match = if self.buffer_find_open {
+            self.buffer_find_match
+        } else {
+            active_find_match_for_cursor(&data.cursor_positions, &data.find_matches)
+        };
         let pending_scroll_to_line = self
             .pending_pane_scroll_lines
             .remove(&scroll_key)
@@ -99,7 +104,7 @@ impl KuroyaApp {
             pending_actions.focus_editor = true;
         }
         ui.painter()
-            .rect_filled(viewport_rect, 0.0, Color32::from_rgb(30, 30, 30));
+            .rect_filled(viewport_rect, 0.0, ui.visuals().code_bg_color);
 
         if let Some(preview) = self.image_preview_buffers.get_mut(&active_id) {
             render_image_preview(ui, viewport_rect, active_id, preview, data.font_size);
@@ -542,6 +547,19 @@ impl KuroyaApp {
     }
 }
 
+fn active_find_match_for_cursor(
+    cursor_positions: &[CursorPosition],
+    find_matches: &[Range<usize>],
+) -> usize {
+    let Some(cursor) = cursor_positions.first() else {
+        return usize::MAX;
+    };
+    find_matches
+        .iter()
+        .position(|range| range.start <= cursor.char_idx && cursor.char_idx < range.end)
+        .unwrap_or(usize::MAX)
+}
+
 fn paint_editor_placeholder(
     ui: &egui::Ui,
     content_rect: Rect,
@@ -574,7 +592,7 @@ fn paint_editor_placeholder(
         Align2::LEFT_TOP,
         text,
         FontId::new(font_size, FontFamily::Monospace),
-        Color32::from_rgb(128, 128, 128),
+        ui.visuals().weak_text_color(),
     );
 }
 
@@ -621,14 +639,15 @@ fn editor_placeholder_display_text(
 mod tests {
     use super::{
         DIFF_PATCH_OVERVIEW_MAX_SCAN_BYTES, DIFF_PATCH_OVERVIEW_MAX_SCAN_LINES,
-        EDITOR_PLACEHOLDER_MAX_CHARS, diff_patch_overview_lines, editor_content_rect_with_padding,
-        editor_horizontal_scroll_enabled, editor_minimap_visible, editor_minimap_width,
-        editor_placeholder_display_text, editor_row_width, editor_scroll_row_count,
-        editor_scroll_source, editor_scrollbar_visibility, editor_scrollbar_visibility_for_axes,
-        editor_scrollbar_width, editor_viewport_rects, editor_viewport_row_height,
-        editor_visible_rows_for_render, editor_wheel_scroll_multiplier, editor_zoomed_font_size,
-        minimap_decoration_line_sets, overview_ruler_border_rect, overview_ruler_cursor_lines,
-        overview_ruler_cursor_marker_rect, scm_diff_overview_marker_rect,
+        EDITOR_PLACEHOLDER_MAX_CHARS, active_find_match_for_cursor, diff_patch_overview_lines,
+        editor_content_rect_with_padding, editor_horizontal_scroll_enabled, editor_minimap_visible,
+        editor_minimap_width, editor_placeholder_display_text, editor_row_width,
+        editor_scroll_row_count, editor_scroll_source, editor_scrollbar_visibility,
+        editor_scrollbar_visibility_for_axes, editor_scrollbar_width, editor_viewport_rects,
+        editor_viewport_row_height, editor_visible_rows_for_render, editor_wheel_scroll_multiplier,
+        editor_zoomed_font_size, minimap_decoration_line_sets, overview_ruler_border_rect,
+        overview_ruler_cursor_lines, overview_ruler_cursor_marker_rect,
+        scm_diff_overview_marker_rect,
     };
     use eframe::egui::{Rect, pos2};
     use egui::scroll_area::ScrollBarVisibility;
@@ -636,7 +655,32 @@ mod tests {
         EditorMinimapAutohide, EditorMinimapSide, EditorMinimapSize, EditorScrollbarVisibility,
         GitLineChangeKind, MAX_EDITOR_LINE_HEIGHT, TextBuffer, buffer::CursorPosition,
     };
-    use std::collections::HashSet;
+    use std::{collections::HashSet, ops::Range};
+
+    #[test]
+    fn active_find_match_for_cursor_follows_current_match() {
+        let cursors = [CursorPosition {
+            line: 0,
+            column: 12,
+            char_idx: 12,
+        }];
+        let matches: Vec<Range<usize>> = vec![0..5, 11..16, 22..27];
+
+        assert_eq!(active_find_match_for_cursor(&cursors, &matches), 1);
+    }
+
+    #[test]
+    fn active_find_match_for_cursor_uses_no_match_sentinel() {
+        let cursors = [CursorPosition {
+            line: 0,
+            column: 6,
+            char_idx: 6,
+        }];
+        let matches: Vec<Range<usize>> = vec![0..5, 11..16];
+
+        assert_eq!(active_find_match_for_cursor(&cursors, &matches), usize::MAX);
+        assert_eq!(active_find_match_for_cursor(&[], &matches), usize::MAX);
+    }
 
     #[test]
     fn editor_scroll_row_count_can_allow_last_line_to_scroll_to_top() {

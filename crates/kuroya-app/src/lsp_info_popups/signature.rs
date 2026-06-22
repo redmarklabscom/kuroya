@@ -42,8 +42,13 @@ impl KuroyaApp {
             .anchor(egui::Align2::CENTER_TOP, [0.0, 148.0])
             .default_size([620.0, 240.0])
             .show(ctx, |ui| {
-                let display =
-                    cached_signature_popup_display(ui.ctx(), popup, ui.visuals().text_color());
+                let display = cached_signature_popup_display(
+                    ui.ctx(),
+                    popup,
+                    ui.visuals().text_color(),
+                    ui.visuals().weak_text_color(),
+                    ui.visuals().selection.bg_fill,
+                );
                 ui.horizontal(|ui| {
                     ui.label(Arc::clone(&display.target_label));
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
@@ -71,7 +76,7 @@ impl KuroyaApp {
                                 let active = popup.help.active_parameter == Some(idx);
                                 let label = RichText::new(parameter.label.as_str()).monospace();
                                 let label = if active {
-                                    label.strong().color(Color32::from_rgb(220, 230, 255))
+                                    label.strong().color(ui.visuals().text_color())
                                 } else {
                                     label
                                 };
@@ -82,7 +87,7 @@ impl KuroyaApp {
                                             ui,
                                             documentation,
                                             LspMarkdownTextSize::Small,
-                                            Color32::from_rgb(126, 136, 150),
+                                            ui.visuals().weak_text_color(),
                                         );
                                     }
                                 });
@@ -149,12 +154,14 @@ fn cached_signature_popup_display(
     ctx: &Context,
     popup: &crate::transient_state::LspSignatureHelpPopup,
     text_color: Color32,
+    weak_text_color: Color32,
+    active_background: Color32,
 ) -> Arc<SignaturePopupDisplay> {
     ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<LspSignatureDisplayCache>(Id::new(
             LSP_SIGNATURE_DISPLAY_CACHE_ID,
         ))
-        .display_for_popup(popup, text_color)
+        .display_for_popup(popup, text_color, weak_text_color, active_background)
     })
 }
 
@@ -168,15 +175,29 @@ impl LspSignatureDisplayCache {
         &mut self,
         popup: &crate::transient_state::LspSignatureHelpPopup,
         text_color: Color32,
+        weak_text_color: Color32,
+        active_background: Color32,
     ) -> Arc<SignaturePopupDisplay> {
         if let Some(entry) = &self.display
-            && entry.key.matches_popup(popup, text_color)
+            && entry
+                .key
+                .matches_popup(popup, text_color, weak_text_color, active_background)
         {
             return Arc::clone(&entry.display);
         }
 
-        let key = SignaturePopupDisplayCacheKey::new(popup, text_color);
-        let display = Arc::new(SignaturePopupDisplay::new(popup, text_color));
+        let key = SignaturePopupDisplayCacheKey::new(
+            popup,
+            text_color,
+            weak_text_color,
+            active_background,
+        );
+        let display = Arc::new(SignaturePopupDisplay::new(
+            popup,
+            text_color,
+            weak_text_color,
+            active_background,
+        ));
         self.display = Some(SignaturePopupDisplayCacheEntry {
             key,
             display: Arc::clone(&display),
@@ -201,11 +222,18 @@ struct SignaturePopupDisplayCacheKey {
     active_parameter: Option<usize>,
     signature_count: usize,
     text_color: [u8; 4],
+    weak_text_color: [u8; 4],
+    active_background: [u8; 4],
     source_fingerprint: u64,
 }
 
 impl SignaturePopupDisplayCacheKey {
-    fn new(popup: &crate::transient_state::LspSignatureHelpPopup, text_color: Color32) -> Self {
+    fn new(
+        popup: &crate::transient_state::LspSignatureHelpPopup,
+        text_color: Color32,
+        weak_text_color: Color32,
+        active_background: Color32,
+    ) -> Self {
         Self {
             id: popup.id,
             path: popup.path.clone(),
@@ -215,6 +243,8 @@ impl SignaturePopupDisplayCacheKey {
             active_parameter: popup.help.active_parameter,
             signature_count: popup.help.signatures.len(),
             text_color: signature_color_key(text_color),
+            weak_text_color: signature_color_key(weak_text_color),
+            active_background: signature_color_key(active_background),
             source_fingerprint: signature_help_source_fingerprint(&popup.help),
         }
     }
@@ -223,6 +253,8 @@ impl SignaturePopupDisplayCacheKey {
         &self,
         popup: &crate::transient_state::LspSignatureHelpPopup,
         text_color: Color32,
+        weak_text_color: Color32,
+        active_background: Color32,
     ) -> bool {
         self.id == popup.id
             && self.line == popup.line
@@ -231,6 +263,8 @@ impl SignaturePopupDisplayCacheKey {
             && self.active_parameter == popup.help.active_parameter
             && self.signature_count == popup.help.signatures.len()
             && self.text_color == signature_color_key(text_color)
+            && self.weak_text_color == signature_color_key(weak_text_color)
+            && self.active_background == signature_color_key(active_background)
             && self.path.as_path() == popup.path.as_path()
             && self.source_fingerprint == signature_help_source_fingerprint(&popup.help)
     }
@@ -243,9 +277,19 @@ struct SignaturePopupDisplay {
 }
 
 impl SignaturePopupDisplay {
-    fn new(popup: &crate::transient_state::LspSignatureHelpPopup, text_color: Color32) -> Self {
+    fn new(
+        popup: &crate::transient_state::LspSignatureHelpPopup,
+        text_color: Color32,
+        weak_text_color: Color32,
+        active_background: Color32,
+    ) -> Self {
         let signature = signature_help_visible_signature(&popup.help).map(|signature| {
-            SignatureDisplay::new(signature, popup.help.active_parameter, text_color)
+            SignatureDisplay::new(
+                signature,
+                popup.help.active_parameter,
+                text_color,
+                active_background,
+            )
         });
         let footer = signature.as_ref().map(|_| {
             Arc::new(
@@ -255,7 +299,7 @@ impl SignaturePopupDisplay {
                     popup.help.signatures.len()
                 ))
                 .small()
-                .color(Color32::from_rgb(126, 136, 150)),
+                .color(weak_text_color),
             )
         });
 
@@ -264,6 +308,7 @@ impl SignaturePopupDisplay {
                 &popup.path,
                 popup.line,
                 popup.column,
+                weak_text_color,
             )),
             signature,
             footer,
@@ -282,6 +327,7 @@ impl SignatureDisplay {
         signature: &LspSignatureInformation,
         active_parameter: Option<usize>,
         text_color: Color32,
+        active_background: Color32,
     ) -> Self {
         Self {
             label_job: signature_label_job(
@@ -289,6 +335,7 @@ impl SignatureDisplay {
                 &signature.parameters,
                 active_parameter,
                 text_color,
+                active_background,
             ),
             documentation: signature
                 .documentation
@@ -339,10 +386,15 @@ fn bounded_signature_parameter_markdown(contents: &str) -> Cow<'_, str> {
     )
 }
 
-fn signature_target_rich_text(path: &Path, line: usize, column: usize) -> RichText {
+fn signature_target_rich_text(
+    path: &Path,
+    line: usize,
+    column: usize,
+    text_color: Color32,
+) -> RichText {
     RichText::new(signature_target_label(path, line, column))
         .small()
-        .color(Color32::from_rgb(126, 136, 150))
+        .color(text_color)
 }
 
 fn signature_target_label(path: &Path, line: usize, column: usize) -> String {
@@ -641,6 +693,7 @@ fn signature_label_job(
     parameters: &[LspParameterInformation],
     active_parameter: Option<usize>,
     text_color: Color32,
+    active_background: Color32,
 ) -> LayoutJob {
     let normal = signature_label_format(text_color, Color32::TRANSPARENT);
 
@@ -677,10 +730,7 @@ fn signature_label_job(
     };
 
     let display_text = display_label.text.as_ref();
-    let active = signature_label_format(
-        Color32::from_rgb(220, 230, 255),
-        Color32::from_rgba_unmultiplied(78, 120, 255, 72),
-    );
+    let active = signature_label_format(text_color, active_background);
     let mut job = signature_label_job_with_capacity(display_text.len(), 3);
     job.append(&display_text[..range.start], 0.0, normal.clone());
     job.append(&display_text[range.clone()], 0.0, active);
@@ -862,14 +912,29 @@ mod tests {
             vec![parameter("value"), parameter("replacement")],
         )]);
         let mut cache = LspSignatureDisplayCache::default();
-        let first = cache.display_for_popup(&popup, Color32::WHITE);
-        let second = cache.display_for_popup(&popup, Color32::WHITE);
+        let first = cache.display_for_popup(
+            &popup,
+            Color32::WHITE,
+            Color32::WHITE,
+            Color32::from_rgba_unmultiplied(78, 120, 255, 72),
+        );
+        let second = cache.display_for_popup(
+            &popup,
+            Color32::WHITE,
+            Color32::WHITE,
+            Color32::from_rgba_unmultiplied(78, 120, 255, 72),
+        );
 
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(first.target_label.text(), "main.rs:3:21");
 
         popup.help.active_parameter = Some(1);
-        let third = cache.display_for_popup(&popup, Color32::WHITE);
+        let third = cache.display_for_popup(
+            &popup,
+            Color32::WHITE,
+            Color32::WHITE,
+            Color32::from_rgba_unmultiplied(78, 120, 255, 72),
+        );
 
         assert!(!Arc::ptr_eq(&first, &third));
         let signature = third.signature.as_ref().expect("signature");
@@ -897,7 +962,12 @@ mod tests {
         signature.documentation = Some("  **Signature** docs  ".to_owned());
         let popup = signature_popup(vec![signature]);
 
-        let display = SignaturePopupDisplay::new(&popup, Color32::WHITE);
+        let display = SignaturePopupDisplay::new(
+            &popup,
+            Color32::WHITE,
+            Color32::WHITE,
+            Color32::from_rgba_unmultiplied(78, 120, 255, 72),
+        );
         let signature = display.signature.as_ref().expect("signature display");
         let parameter = signature.parameters.first().expect("parameter display");
 
@@ -1066,6 +1136,7 @@ mod tests {
             &parameters,
             Some(0),
             Color32::WHITE,
+            Color32::from_rgba_unmultiplied(78, 120, 255, 72),
         );
 
         assert_eq!(job.text, "call( value: usize)");
@@ -1080,7 +1151,13 @@ mod tests {
     #[test]
     fn signature_label_job_preserves_active_highlight_on_borrowed_safe_label() {
         let parameters = [parameter("value: usize")];
-        let job = signature_label_job("call(value: usize)", &parameters, Some(0), Color32::WHITE);
+        let job = signature_label_job(
+            "call(value: usize)",
+            &parameters,
+            Some(0),
+            Color32::WHITE,
+            Color32::from_rgba_unmultiplied(78, 120, 255, 72),
+        );
 
         assert_eq!(job.text, "call(value: usize)");
         assert_eq!(
@@ -1094,7 +1171,13 @@ mod tests {
         let prefix = "x".repeat(MAX_SIGNATURE_LABEL_DISPLAY_CHARS + 4);
         let raw = format!("call({prefix}, active)");
         let parameters = [parameter("active")];
-        let job = signature_label_job(&raw, &parameters, Some(0), Color32::WHITE);
+        let job = signature_label_job(
+            &raw,
+            &parameters,
+            Some(0),
+            Color32::WHITE,
+            Color32::from_rgba_unmultiplied(78, 120, 255, 72),
+        );
 
         assert!(job.text.ends_with(SIGNATURE_LABEL_TRUNCATED_NOTICE));
         assert_eq!(job.sections.len(), 1);

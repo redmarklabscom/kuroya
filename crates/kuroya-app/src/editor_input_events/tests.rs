@@ -1,20 +1,29 @@
 use super::{
     ActiveSnippetEditSnapshot, EditorInputEvent, SnippetPostEditSnapshot,
     active_snippet_edit_snapshot_from_ranges, auto_indented_paste_text,
-    editor_input_events_snapshot, editor_key_event_is_relevant_for_input_mode,
-    editor_paste_transform_plan, editor_plain_text_key_event_is_redundant,
-    editor_text_event_coalescing_allowed_for_mode, line_prefix_looks_inside_string,
-    normalized_ime_preedit_text, paste_selector_visible_after_paste, paste_text_at_editor_cursors,
-    reindent_multiline_paste, snippet_post_edit_snapshot, spread_paste_segments,
+    editor_input_events_snapshot, editor_input_events_snapshot_with_vim_settings,
+    editor_key_event_is_relevant_for_input_mode, editor_paste_transform_plan,
+    editor_plain_text_key_event_is_redundant, editor_text_event_coalescing_allowed_for_mode,
+    line_prefix_looks_inside_string, normalized_ime_preedit_text,
+    paste_selector_visible_after_paste, paste_text_at_editor_cursors, reindent_multiline_paste,
+    snippet_post_edit_snapshot, spread_paste_segments,
 };
 use crate::{
-    KuroyaApp, app_startup_context::AppStartupContext, editor_input::normalized_editor_paste_text,
-    editor_vim_key_events::EditorVimMode, terminal::TerminalPane,
-    transient_state::EditorImePreedit, ui_event_channel::ui_event_channel,
+    KuroyaApp,
+    app_startup_context::AppStartupContext,
+    editor_input::normalized_editor_paste_text,
+    editor_vim_key_events::EditorVimMode,
+    terminal::{
+        TerminalPane, terminal_input_id, terminal_rename_input_id, terminal_search_input_id,
+    },
+    transient_state::EditorImePreedit,
+    ui_event_channel::ui_event_channel,
 };
 use eframe::egui::{Context, Event, ImeEvent, Key, Modifiers};
 use kuroya_core::{
-    EditorMultiCursorPaste, EditorPasteAsShowPasteSelector, EditorSettings, TextBuffer, Workspace,
+    Command, EditorMultiCursorPaste, EditorPasteAsShowPasteSelector, EditorSettings,
+    EditorVimKeyOverride, EditorVimSettings, LspDocumentHighlight, Selection, TextBuffer,
+    Workspace,
 };
 use std::{path::PathBuf, time::Instant};
 use tokio::runtime::Runtime;
@@ -100,6 +109,229 @@ fn cut_input_event_clears_stale_ime_preedit_when_buffer_changes() {
 }
 
 #[test]
+fn normal_text_input_replaces_selection_and_leaves_no_highlighted_range() {
+    let root = PathBuf::from("normal-input-selection-typing-test");
+    let path = root.join("main.rs");
+    let mut app = app_for_input_test(root);
+    let mut buffer = TextBuffer::from_text(1, Some(path.clone()), "alpha beta".to_owned());
+    buffer.set_selection(0, 5);
+    app.settings.vim_keybindings = false;
+    app.buffers.push(buffer);
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+    app.buffer_find_open = true;
+    app.buffer_find_query = "alpha".to_owned();
+    app.document_highlights_path = Some(path);
+    app.document_highlights = vec![LspDocumentHighlight {
+        line: 0,
+        column: 0,
+        end_line: 0,
+        end_column: 5,
+        kind: None,
+    }];
+
+    assert_eq!(app.find_matches_for_buffer_index(0), vec![0..5]);
+    assert_eq!(app.buffer_find_cache.cached_buffer_id_for_test(), Some(1));
+    app.buffer_find_open = false;
+
+    let ctx = Context::default();
+    ctx.input_mut(|input| input.events.push(Event::Text("x".to_owned())));
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    let buffer = app.buffer(1).expect("buffer remains loaded");
+    assert_eq!(buffer.text(), "x beta");
+    assert_eq!(buffer.selections(), &[Selection::caret(1)]);
+    assert_eq!(app.buffer_find_cache.cached_buffer_id_for_test(), None);
+    assert!(app.document_highlights_path.is_none());
+    assert!(app.document_highlights.is_empty());
+
+    let data = app.prepare_editor_pane_data(1, 0, 8.0, true, true);
+    assert!(data.find_matches.is_empty());
+    assert!(data.document_highlight_ranges.is_empty());
+}
+
+#[test]
+fn editor_input_ignores_text_while_terminal_input_has_focus() {
+    let root = PathBuf::from("terminal-focus-editor-input-test");
+    let mut app = app_for_input_test(root);
+    let buffer = TextBuffer::from_text(1, None, "alpha".to_owned());
+    app.buffers.push(buffer);
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+    let _rx_command = app.terminal.add_process_session_for_test(7);
+
+    let ctx = Context::default();
+    ctx.memory_mut(|memory| memory.request_focus(terminal_input_id(7)));
+    ctx.input_mut(|input| input.events.push(Event::Text("x".to_owned())));
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    assert_eq!(
+        app.buffer(1).map(TextBuffer::text),
+        Some("alpha".to_owned())
+    );
+    assert_eq!(app.focused_pane, Some(1));
+}
+
+#[test]
+fn editor_input_still_accepts_text_when_terminal_visible_but_not_focused() {
+    let root = PathBuf::from("terminal-visible-editor-input-test");
+    let mut app = app_for_input_test(root);
+    let mut buffer = TextBuffer::from_text(1, None, "alpha".to_owned());
+    buffer.set_single_cursor(buffer.len_chars());
+    app.buffers.push(buffer);
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+    let _rx_command = app.terminal.add_process_session_for_test(7);
+
+    let ctx = Context::default();
+    ctx.input_mut(|input| input.events.push(Event::Text("x".to_owned())));
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    assert_eq!(
+        app.buffer(1).map(TextBuffer::text),
+        Some("alphax".to_owned())
+    );
+}
+
+#[test]
+fn editor_input_ignores_text_while_terminal_search_has_focus() {
+    let root = PathBuf::from("terminal-search-focus-editor-input-test");
+    let mut app = app_for_input_test(root);
+    let buffer = TextBuffer::from_text(1, None, "alpha".to_owned());
+    app.buffers.push(buffer);
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+    let _rx_command = app.terminal.add_process_session_for_test(7);
+    app.terminal.open_terminal_search();
+
+    let ctx = Context::default();
+    ctx.memory_mut(|memory| memory.request_focus(terminal_search_input_id()));
+    ctx.input_mut(|input| input.events.push(Event::Text("x".to_owned())));
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    assert_eq!(
+        app.buffer(1).map(TextBuffer::text),
+        Some("alpha".to_owned())
+    );
+}
+
+#[test]
+fn editor_input_ignores_text_while_terminal_rename_has_focus() {
+    let root = PathBuf::from("terminal-rename-focus-editor-input-test");
+    let mut app = app_for_input_test(root);
+    let buffer = TextBuffer::from_text(1, None, "alpha".to_owned());
+    app.buffers.push(buffer);
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+    let _rx_command = app.terminal.add_process_session_for_test(7);
+    app.terminal.begin_rename_session_for_test(0);
+
+    let ctx = Context::default();
+    ctx.memory_mut(|memory| memory.request_focus(terminal_rename_input_id(7)));
+    ctx.input_mut(|input| input.events.push(Event::Text("x".to_owned())));
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    assert_eq!(
+        app.buffer(1).map(TextBuffer::text),
+        Some("alpha".to_owned())
+    );
+}
+
+#[test]
+fn vim_insert_text_collapses_stale_selection_before_typing() {
+    let root = PathBuf::from("vim-insert-selection-typing-test");
+    let mut app = app_for_input_test(root);
+    let mut buffer = TextBuffer::from_text(1, None, "alpha beta".to_owned());
+    buffer.set_selection(0, 5);
+    app.settings.vim_keybindings = true;
+    app.editor_vim_mode = EditorVimMode::Insert;
+    app.buffers.push(buffer);
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+
+    let ctx = Context::default();
+    ctx.input_mut(|input| input.events.push(Event::Text("x".to_owned())));
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    let buffer = app.buffer(1).expect("buffer remains loaded");
+    assert_eq!(buffer.text(), "alphax beta");
+    assert_eq!(buffer.selections(), &[Selection::caret(6)]);
+}
+
+#[test]
+fn vim_insert_paste_collapses_stale_selection_before_inserting() {
+    let root = PathBuf::from("vim-insert-selection-paste-test");
+    let mut app = app_for_input_test(root);
+    let mut buffer = TextBuffer::from_text(1, None, "alpha beta".to_owned());
+    buffer.set_selection(0, 5);
+    app.settings.vim_keybindings = true;
+    app.editor_vim_mode = EditorVimMode::Insert;
+    app.buffers.push(buffer);
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+
+    let ctx = Context::default();
+    ctx.input_mut(|input| input.events.push(Event::Paste("XY".to_owned())));
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    let buffer = app.buffer(1).expect("buffer remains loaded");
+    assert_eq!(buffer.text(), "alphaXY beta");
+    assert_eq!(buffer.selections(), &[Selection::caret(7)]);
+}
+
+#[test]
+fn vim_command_override_from_settings_reaches_command_bus() {
+    let root = PathBuf::from("vim-command-override-input-test");
+    let mut app = app_for_input_test(root);
+    let mut buffer = TextBuffer::from_text(1, None, "alpha".to_owned());
+    buffer.set_single_cursor(1);
+    app.settings.vim_keybindings = true;
+    app.settings.vim.key_overrides = vec![EditorVimKeyOverride {
+        before: "K".to_owned(),
+        after: String::new(),
+        command: Some(Command::RequestHover),
+    }];
+    app.editor_vim_mode = EditorVimMode::Normal;
+    app.buffers.push(buffer);
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+
+    let ctx = Context::default();
+    ctx.input_mut(|input| {
+        input.events.push(Event::Key {
+            key: Key::K,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        });
+    });
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    let buffer = app.buffer(1).expect("buffer remains loaded");
+    assert_eq!(buffer.text(), "alpha");
+    assert_eq!(buffer.cursor(), 1);
+    assert_eq!(app.command_bus.pop(), Some(Command::RequestHover));
+    assert_eq!(app.command_bus.pop(), None);
+}
+
+#[test]
 fn editor_input_events_snapshot_uses_filtered_plain_events_for_mutation() {
     let snapshot = editor_input_events_snapshot(
         &[
@@ -132,6 +364,231 @@ fn vim_input_events_snapshot_preserves_raw_mutation_semantics() {
 
     assert!(snapshot.includes_mutation);
     assert!(snapshot.events.is_empty());
+}
+
+#[test]
+fn vim_input_events_snapshot_respects_settings_for_mutation_preflight() {
+    let disabled_x = EditorVimSettings {
+        disabled_bindings: vec!["x".to_owned()],
+        ..EditorVimSettings::default()
+    };
+    let disabled_snapshot = editor_input_events_snapshot_with_vim_settings(
+        &[
+            Event::Key {
+                key: Key::X,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+            Event::Text("x".to_owned()),
+        ],
+        true,
+        EditorVimMode::Normal,
+        None,
+        false,
+        &disabled_x,
+    );
+
+    assert!(!disabled_snapshot.includes_mutation);
+
+    let remap_k_to_x = EditorVimSettings {
+        key_overrides: vec![EditorVimKeyOverride {
+            before: "K".to_owned(),
+            after: "x".to_owned(),
+            command: None,
+        }],
+        ..EditorVimSettings::default()
+    };
+    let remapped_snapshot = editor_input_events_snapshot_with_vim_settings(
+        &[
+            Event::Key {
+                key: Key::K,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::SHIFT,
+            },
+            Event::Text("K".to_owned()),
+        ],
+        true,
+        EditorVimMode::Normal,
+        None,
+        false,
+        &remap_k_to_x,
+    );
+
+    assert!(remapped_snapshot.includes_mutation);
+
+    let disabled_w = EditorVimSettings {
+        disabled_bindings: vec!["w".to_owned()],
+        ..EditorVimSettings::default()
+    };
+    let disabled_pending_snapshot = editor_input_events_snapshot_with_vim_settings(
+        &[
+            Event::Key {
+                key: Key::D,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+            Event::Text("d".to_owned()),
+            Event::Key {
+                key: Key::W,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+            Event::Text("w".to_owned()),
+        ],
+        true,
+        EditorVimMode::Normal,
+        None,
+        false,
+        &disabled_w,
+    );
+
+    assert!(!disabled_pending_snapshot.includes_mutation);
+
+    let remap_w_to_l = EditorVimSettings {
+        key_overrides: vec![EditorVimKeyOverride {
+            before: "w".to_owned(),
+            after: "l".to_owned(),
+            command: None,
+        }],
+        ..EditorVimSettings::default()
+    };
+    let remapped_pending_snapshot = editor_input_events_snapshot_with_vim_settings(
+        &[
+            Event::Key {
+                key: Key::D,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+            Event::Text("d".to_owned()),
+            Event::Key {
+                key: Key::W,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+            Event::Text("w".to_owned()),
+        ],
+        true,
+        EditorVimMode::Normal,
+        None,
+        false,
+        &remap_w_to_l,
+    );
+
+    assert!(remapped_pending_snapshot.includes_mutation);
+}
+
+#[test]
+fn vim_command_override_mutation_preflight_tracks_editor_edit_commands() {
+    let hover = EditorVimSettings {
+        key_overrides: vec![EditorVimKeyOverride {
+            before: "K".to_owned(),
+            after: String::new(),
+            command: Some(Command::RequestHover),
+        }],
+        ..EditorVimSettings::default()
+    };
+    let hover_snapshot = editor_input_events_snapshot_with_vim_settings(
+        &[Event::Key {
+            key: Key::K,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        }],
+        true,
+        EditorVimMode::Normal,
+        None,
+        false,
+        &hover,
+    );
+
+    assert!(!hover_snapshot.includes_mutation);
+
+    let delete_lines = EditorVimSettings {
+        key_overrides: vec![EditorVimKeyOverride {
+            before: "K".to_owned(),
+            after: String::new(),
+            command: Some(Command::DeleteLines),
+        }],
+        ..EditorVimSettings::default()
+    };
+    let delete_snapshot = editor_input_events_snapshot_with_vim_settings(
+        &[Event::Key {
+            key: Key::K,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        }],
+        true,
+        EditorVimMode::Normal,
+        None,
+        false,
+        &delete_lines,
+    );
+
+    assert!(delete_snapshot.includes_mutation);
+}
+
+#[test]
+fn vim_insert_escape_settings_remap_counts_as_mutation_when_target_mutates() {
+    let remap_escape_to_x = EditorVimSettings {
+        key_overrides: vec![EditorVimKeyOverride {
+            before: "<Esc>".to_owned(),
+            after: "x".to_owned(),
+            command: None,
+        }],
+        ..EditorVimSettings::default()
+    };
+    let remapped_snapshot = editor_input_events_snapshot_with_vim_settings(
+        &[Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }],
+        true,
+        EditorVimMode::Insert,
+        None,
+        false,
+        &remap_escape_to_x,
+    );
+
+    assert!(remapped_snapshot.includes_mutation);
+
+    let disabled_escape = EditorVimSettings {
+        disabled_bindings: vec!["<Esc>".to_owned()],
+        ..EditorVimSettings::default()
+    };
+    let disabled_snapshot = editor_input_events_snapshot_with_vim_settings(
+        &[Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }],
+        true,
+        EditorVimMode::Insert,
+        None,
+        false,
+        &disabled_escape,
+    );
+
+    assert!(!disabled_snapshot.includes_mutation);
 }
 
 #[test]

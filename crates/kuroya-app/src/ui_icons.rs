@@ -27,6 +27,7 @@ pub enum IconKind {
     Diagnostics,
     Lsp,
     Cursor,
+    Keyboard,
     Theme,
     Code,
     Settings,

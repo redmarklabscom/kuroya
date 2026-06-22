@@ -4,7 +4,7 @@ use crate::{
     workspace_state::PaneId,
 };
 use eframe::egui::{
-    self, Align, Button, Color32, Layout, Rect, RichText, Sense, Stroke, UiBuilder, pos2, vec2,
+    self, Align, Button, Layout, Rect, RichText, Sense, Stroke, UiBuilder, pos2, vec2,
 };
 use kuroya_core::{BufferId, Command, GitChangeStage};
 use std::path::Path;
@@ -36,10 +36,11 @@ impl KuroyaApp {
         let (rect, response) =
             ui.allocate_exact_size(vec2(width, EDITOR_HEADER_HEIGHT), Sense::click());
 
+        let visuals = ui.visuals();
         let fill = if selected {
-            Color32::from_rgb(30, 34, 41)
+            visuals.widgets.active.bg_fill
         } else {
-            Color32::from_rgb(25, 29, 35)
+            visuals.panel_fill
         };
         ui.painter().rect_filled(rect, 0.0, fill);
         ui.painter().line_segment(
@@ -47,7 +48,7 @@ impl KuroyaApp {
                 pos2(rect.left(), rect.bottom() - 0.5),
                 pos2(rect.right(), rect.bottom() - 0.5),
             ],
-            Stroke::new(1.0, Color32::from_rgb(45, 50, 59)),
+            Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
         );
         if response.clicked() {
             self.active_pane = pane_id;
@@ -116,7 +117,7 @@ impl KuroyaApp {
                     ui.label(
                         RichText::new("Untitled")
                             .small()
-                            .color(Color32::from_rgb(126, 136, 150)),
+                            .color(ui.visuals().weak_text_color()),
                     );
                 }
                 if self
@@ -126,7 +127,7 @@ impl KuroyaApp {
                     ui.label(
                         RichText::new("read-only")
                             .small()
-                            .color(Color32::from_rgb(242, 178, 90)),
+                            .color(ui.visuals().warn_fg_color),
                     );
                 }
             },

@@ -81,7 +81,6 @@ impl KuroyaApp {
     pub(crate) fn mark_buffer_changed(&mut self, id: BufferId) {
         self.buffer_find_cache.clear_for_buffer(id);
         self.editor_bracket_overlay_cache.clear_for_buffer(id);
-        self.editor_match_highlight_cache.clear_for_buffer(id);
         self.minimap_line_length_cache.clear_for_buffer(id);
         self.minimap_section_header_cache.clear_for_buffer(id);
         self.diff_cache.remove(&id);
@@ -249,8 +248,8 @@ mod tests {
     };
     use kuroya_core::{
         EditorMatchBrackets, EditorSettings, GitBlameLine, GitChangeStage, GitDiffHunk,
-        LspCodeLens, LspInlayHint, LspSemanticToken, LspSignatureHelp, LspTextEdit, TextBuffer,
-        Workspace,
+        LspCodeLens, LspDocumentHighlight, LspInlayHint, LspSemanticToken, LspSignatureHelp,
+        LspTextEdit, TextBuffer, Workspace,
     };
     use std::{borrow::Cow, collections::HashSet, path::PathBuf, time::Instant};
     use tokio::runtime::Runtime;
@@ -430,6 +429,13 @@ mod tests {
         app.document_symbols_path = Some(path.clone());
         app.document_symbols_selected = 2;
         app.document_highlights_path = Some(path.clone());
+        app.document_highlights = vec![LspDocumentHighlight {
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 5,
+            kind: Some(2),
+        }];
         app.inlay_hints.insert(path.clone(), vec![inlay_hint(1, 1)]);
         app.code_lenses
             .insert(path.clone(), vec![code_lens(1, 1, "Run")]);
@@ -505,6 +511,7 @@ mod tests {
         assert_eq!(app.document_symbols_path, None);
         assert_eq!(app.document_symbols_selected, 0);
         assert_eq!(app.document_highlights_path, None);
+        assert!(app.document_highlights.is_empty());
         assert!(!app.inlay_hints.contains_key(&path));
         assert!(!app.code_lenses.contains_key(&path));
         assert!(!app.semantic_tokens.contains_key(&path));

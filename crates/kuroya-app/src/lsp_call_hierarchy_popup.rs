@@ -10,7 +10,7 @@ use crate::{
         selection_page_step,
     },
 };
-use eframe::egui::{self, Align, Color32, Context, Key, RichText, ScrollArea};
+use eframe::egui::{self, Align, Context, Key, RichText, ScrollArea};
 use kuroya_core::LspCallHierarchyCall;
 use std::fmt::Write;
 
@@ -42,7 +42,7 @@ impl KuroyaApp {
                     ui.label(
                         RichText::new(prepared.target_label())
                             .small()
-                            .color(Color32::from_rgb(126, 136, 150)),
+                            .color(ui.visuals().weak_text_color()),
                     );
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         if popup_button(ui, "Close", PopupButtonKind::Secondary).clicked() {

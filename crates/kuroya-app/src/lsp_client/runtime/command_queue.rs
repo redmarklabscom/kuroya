@@ -1,8 +1,9 @@
-use crate::lsp_client::commands::LspClientCommand;
+use crate::lsp_client::{commands::LspClientCommand, handle::LSP_COMMAND_QUEUE_CAPACITY};
 use std::{collections::VecDeque, path::Path};
 use tokio::sync::mpsc;
 
 const MAX_DID_CHANGE_COALESCE_DRAIN_PER_RECV: usize = 64;
+const MAX_INTERNAL_PENDING_COMMANDS: usize = LSP_COMMAND_QUEUE_CAPACITY;
 
 #[derive(Default)]
 pub(super) struct LspClientCommandQueue {
@@ -67,6 +68,9 @@ impl LspClientCommandQueue {
                 self.discard_buffered_commands(rx);
                 return true;
             }
+            if self.pending.len() >= MAX_INTERNAL_PENDING_COMMANDS {
+                break;
+            }
             self.pending.push_back(next);
         }
 
@@ -118,7 +122,7 @@ fn paths_match(left: &Path, right: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kuroya_core::{LanguageId, TextBuffer};
+    use kuroya_core::TextBuffer;
     use std::path::PathBuf;
 
     fn text_snapshot(text: &str) -> kuroya_core::TextSnapshot {
@@ -138,7 +142,7 @@ mod tests {
         LspClientCommand::DidOpen {
             id,
             path: PathBuf::from(path),
-            language: LanguageId::Rust,
+            language: "rust".to_owned(),
             version: 1,
             text: text_snapshot("open"),
         }
@@ -452,6 +456,30 @@ mod tests {
         ));
         assert!(queue.pending.is_empty());
         assert!(queue.recv(&mut rx).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn recv_does_not_overfill_internal_pending_buffer_when_scanning_for_shutdown() {
+        let (tx, mut rx) = mpsc::channel(MAX_INTERNAL_PENDING_COMMANDS + 8);
+        for version in 0..(MAX_INTERNAL_PENDING_COMMANDS + 8) {
+            tx.try_send(did_save(&format!("src/file_{version}.rs")))
+                .unwrap();
+        }
+        drop(tx);
+        let mut queue = LspClientCommandQueue::default();
+        for version in 0..MAX_INTERNAL_PENDING_COMMANDS {
+            queue
+                .pending
+                .push_back(did_save(&format!("src/pending_{version}.rs")));
+        }
+
+        assert!(matches!(
+            queue.recv(&mut rx).await,
+            Some(LspClientCommand::DidSave { .. })
+        ));
+
+        assert_eq!(queue.pending.len(), MAX_INTERNAL_PENDING_COMMANDS);
+        assert!(!rx.is_empty());
     }
 
     #[tokio::test]

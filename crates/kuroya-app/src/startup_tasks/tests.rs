@@ -14,9 +14,7 @@ use super::{
     workspace_plugins_enabled, workspace_plugins_restricted_status, workspace_refresh_due,
 };
 use crate::ui_events::UiEvent;
-use kuroya_core::{
-    GitAutoRepositoryDetection, GitOpenRepositoryInParentFolders, ProjectIndex, ProjectSearchIndex,
-};
+use kuroya_core::{GitAutoRepositoryDetection, GitOpenRepositoryInParentFolders};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -104,19 +102,6 @@ fn workspace_index_request_starts_when_idle() {
     assert_eq!(active_request_id, 1);
     assert_eq!(in_flight, Some(1));
     assert!(!queued);
-}
-
-#[test]
-fn workspace_index_event_uses_immediate_empty_project_search_index() {
-    let root = temp_workspace("broad-search-index");
-    fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(root.join("src/main.rs"), "fn indexed() {}\n").unwrap();
-    let index = ProjectIndex::rebuild(&root, 40_000);
-
-    assert_eq!(ProjectSearchIndex::default().len(), 0);
-    assert_eq!(index.files().len(), 1);
-
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -1033,6 +1018,23 @@ fn startup_tasks_skip_placeholder_workspace() {
     assert!(!app.spawn_plugin_discovery());
     assert_eq!(app.workspace_plugins_in_flight_request_id, None);
     assert_eq!(app.status, "No folder open");
+
+    fs::remove_dir_all(root.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn ensure_workspace_index_started_is_lazy_and_idempotent() {
+    let root = temp_workspace("kuroya-lazy-index-start");
+    fs::create_dir_all(&root).unwrap();
+    let mut app = crate::source_control_runtime::source_control_app_for_test(root.clone(), true);
+
+    assert!(app.ensure_workspace_index_started());
+    assert_eq!(app.workspace_index_in_flight_request_id, Some(1));
+    assert!(!app.ensure_workspace_index_started());
+
+    app.workspace_index_in_flight_request_id = None;
+    app.project_index_generation = 1;
+    assert!(!app.ensure_workspace_index_started());
 
     fs::remove_dir_all(root.parent().unwrap()).unwrap();
 }

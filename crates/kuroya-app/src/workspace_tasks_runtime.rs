@@ -241,8 +241,15 @@ impl KuroyaApp {
         let status = workspace_task_started_status_with_cwd(task, Some(cwd.as_path()));
         let launch_task = workspace_task_launch_task(task, cwd);
 
+        if !self.terminal.can_open_session() {
+            self.status = "Terminal session limit reached".to_owned();
+            return;
+        }
         self.prepare_terminal_open_height();
-        let session_id = self.terminal.open_workspace_task(&launch_task);
+        let session_id = self
+            .terminal
+            .open_workspace_task(&launch_task)
+            .expect("terminal session capacity was checked before opening workspace task");
         self.running_workspace_tasks.push(RunningWorkspaceTask {
             task_index: index,
             fingerprint,

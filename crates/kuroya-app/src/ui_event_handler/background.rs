@@ -11,12 +11,11 @@ use crate::{
 use kuroya_core::{
     BufferId, Diagnostic, GitSnapshot, PluginActivationState, PluginCommandRegistry,
     PluginDescriptor, PluginDiscoveryError, PluginLanguageRegistry, PluginRuntimeRegistry,
-    PluginThemeRegistry, ProjectIndex, ProjectSearchIndex, SearchResult, SearchStats, TextBuffer,
+    PluginThemeRegistry, ProjectIndex, SearchProgress, SearchResult, SearchStats, TextBuffer,
 };
 use std::{
     fmt::Write as _,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 pub(super) fn handle_cached_index_event(
@@ -37,6 +36,7 @@ pub(super) fn handle_cached_index_event(
     let truncated = index.truncated();
     app.index = index;
     app.project_index_generation = app.project_index_generation.saturating_add(1);
+    app.project_search_index_generation = app.project_search_index_generation.saturating_add(1);
     app.status = workspace_cached_index_status(count, truncated);
     true
 }
@@ -46,7 +46,6 @@ pub(super) fn handle_indexed_event(
     request_id: u64,
     root: PathBuf,
     index: ProjectIndex,
-    search_index: ProjectSearchIndex,
 ) -> bool {
     if !background_workspace_event_matches(
         &app.workspace.root,
@@ -60,28 +59,8 @@ pub(super) fn handle_indexed_event(
     let truncated = index.truncated();
     app.index = index;
     app.project_index_generation = app.project_index_generation.saturating_add(1);
-    app.project_search_index = Arc::new(search_index);
     app.project_search_index_generation = app.project_search_index_generation.saturating_add(1);
     app.status = workspace_index_status(count, truncated);
-    true
-}
-
-pub(super) fn handle_project_search_indexed_event(
-    app: &mut KuroyaApp,
-    request_id: u64,
-    root: PathBuf,
-    search_index: ProjectSearchIndex,
-) -> bool {
-    if !background_workspace_event_matches(
-        &app.workspace.root,
-        &root,
-        request_id,
-        app.workspace_index_active_request_id,
-    ) {
-        return false;
-    }
-    app.project_search_index = Arc::new(search_index);
-    app.project_search_index_generation = app.project_search_index_generation.saturating_add(1);
     true
 }
 
@@ -113,24 +92,16 @@ pub(super) fn handle_search_finished_event(
     exclude_globs: Vec<String>,
     result: SearchResult,
 ) -> bool {
-    if !workspace_event_matches(&app.workspace.root, &workspace_root) {
-        return false;
-    }
-    if !project_search_request_is_current(
+    if !search_event_is_current(
+        app,
         request_id,
-        app.project_search_active_request_id,
         index_generation,
-        app.project_search_index_generation,
+        &workspace_root,
         &query,
         case_sensitive,
         whole_word,
         &include_globs,
         &exclude_globs,
-        app.project_search_query.trim(),
-        app.project_search_case_sensitive,
-        app.project_search_whole_word,
-        &parse_project_globs(&app.project_search_include),
-        &parse_project_globs(&app.project_search_exclude),
     ) {
         return false;
     }
@@ -138,12 +109,15 @@ pub(super) fn handle_search_finished_event(
     let error = result.error.clone();
     let stats = result.stats;
     app.project_search_result = result;
-    app.project_search_result_query = query;
-    app.project_search_result_index_generation = index_generation;
-    app.project_search_result_case_sensitive = case_sensitive;
-    app.project_search_result_whole_word = whole_word;
-    app.project_search_result_include_globs = include_globs;
-    app.project_search_result_exclude_globs = exclude_globs;
+    apply_project_search_result_metadata(
+        app,
+        query,
+        index_generation,
+        case_sensitive,
+        whole_word,
+        include_globs,
+        exclude_globs,
+    );
     app.project_search_selected = 0;
     if let Some(error) = error {
         app.status = display_error_label_cow(&error).into_owned();
@@ -151,6 +125,128 @@ pub(super) fn handle_search_finished_event(
         app.status = project_search_status(count, app.project_search_result.truncated, stats);
     }
     true
+}
+
+pub(super) fn handle_search_progress_event(
+    app: &mut KuroyaApp,
+    request_id: u64,
+    index_generation: u64,
+    workspace_root: PathBuf,
+    query: String,
+    case_sensitive: bool,
+    whole_word: bool,
+    include_globs: Vec<String>,
+    exclude_globs: Vec<String>,
+    progress: SearchProgress,
+) -> bool {
+    if !search_event_is_current(
+        app,
+        request_id,
+        index_generation,
+        &workspace_root,
+        &query,
+        case_sensitive,
+        whole_word,
+        &include_globs,
+        &exclude_globs,
+    ) {
+        return false;
+    }
+
+    if !project_search_result_metadata_matches(
+        app,
+        index_generation,
+        &query,
+        case_sensitive,
+        whole_word,
+        &include_globs,
+        &exclude_globs,
+    ) {
+        app.project_search_result = SearchResult::default();
+        apply_project_search_result_metadata(
+            app,
+            query.clone(),
+            index_generation,
+            case_sensitive,
+            whole_word,
+            include_globs.clone(),
+            exclude_globs.clone(),
+        );
+        app.project_search_selected = 0;
+    }
+
+    app.project_search_result.matches.extend(progress.matches);
+    app.project_search_result.truncated |= progress.truncated;
+    app.project_search_result.stats.merge(progress.stats);
+    app.project_search_result.error = None;
+    let count = app.project_search_result.matches.len();
+    let stats = app.project_search_result.stats;
+    app.status = project_search_progress_status(count, app.project_search_result.truncated, stats);
+    true
+}
+
+fn search_event_is_current(
+    app: &KuroyaApp,
+    request_id: u64,
+    index_generation: u64,
+    workspace_root: &Path,
+    query: &str,
+    case_sensitive: bool,
+    whole_word: bool,
+    include_globs: &[String],
+    exclude_globs: &[String],
+) -> bool {
+    workspace_event_matches(&app.workspace.root, workspace_root)
+        && project_search_request_is_current(
+            request_id,
+            app.project_search_active_request_id,
+            index_generation,
+            app.project_search_index_generation,
+            query,
+            case_sensitive,
+            whole_word,
+            include_globs,
+            exclude_globs,
+            app.project_search_query.trim(),
+            app.project_search_case_sensitive,
+            app.project_search_whole_word,
+            &parse_project_globs(&app.project_search_include),
+            &parse_project_globs(&app.project_search_exclude),
+        )
+}
+
+fn apply_project_search_result_metadata(
+    app: &mut KuroyaApp,
+    query: String,
+    index_generation: u64,
+    case_sensitive: bool,
+    whole_word: bool,
+    include_globs: Vec<String>,
+    exclude_globs: Vec<String>,
+) {
+    app.project_search_result_query = query;
+    app.project_search_result_index_generation = index_generation;
+    app.project_search_result_case_sensitive = case_sensitive;
+    app.project_search_result_whole_word = whole_word;
+    app.project_search_result_include_globs = include_globs;
+    app.project_search_result_exclude_globs = exclude_globs;
+}
+
+fn project_search_result_metadata_matches(
+    app: &KuroyaApp,
+    index_generation: u64,
+    query: &str,
+    case_sensitive: bool,
+    whole_word: bool,
+    include_globs: &[String],
+    exclude_globs: &[String],
+) -> bool {
+    app.project_search_result_index_generation == index_generation
+        && app.project_search_result_query == query
+        && app.project_search_result_case_sensitive == case_sensitive
+        && app.project_search_result_whole_word == whole_word
+        && app.project_search_result_include_globs == include_globs
+        && app.project_search_result_exclude_globs == exclude_globs
 }
 
 pub(crate) fn project_search_status(count: usize, truncated: bool, stats: SearchStats) -> String {
@@ -183,6 +279,35 @@ pub(crate) fn project_search_status(count: usize, truncated: bool, stats: Search
     status
 }
 
+pub(crate) fn project_search_progress_status(
+    count: usize,
+    truncated: bool,
+    stats: SearchStats,
+) -> String {
+    let mut status = match count {
+        0 => "Searching project...".to_owned(),
+        1 if stats.matched_files == 1 => "Searching project: 1 match in 1 file".to_owned(),
+        1 => "Searching project: 1 match".to_owned(),
+        count if stats.matched_files == 1 => {
+            format!("Searching project: {count} matches in 1 file")
+        }
+        count if stats.matched_files > 1 => {
+            format!(
+                "Searching project: {count} matches in {} files",
+                stats.matched_files
+            )
+        }
+        count => format!("Searching project: {count} matches"),
+    };
+    if stats.searched_files > 0 {
+        let _ = write!(status, ", {} files searched", stats.searched_files);
+    }
+    if truncated {
+        status.push_str(", truncated");
+    }
+    status
+}
+
 fn append_project_search_skipped_summary(status: &mut String, stats: SearchStats, skipped: usize) {
     let files = if skipped == 1 { "file" } else { "files" };
     write!(status, "skipped {skipped} {files}").expect("writing to a String cannot fail");
@@ -205,12 +330,6 @@ fn append_project_search_skipped_summary(status: &mut String, stats: SearchStats
         &mut wrote_reason,
         stats.skipped_unreadable_files,
         "unreadable",
-    );
-    append_project_search_skip_count(
-        status,
-        &mut wrote_reason,
-        stats.skipped_index_budget_files,
-        "budget-limited",
     );
 }
 
@@ -531,8 +650,7 @@ mod tests {
         ui_event_channel::ui_event_channel,
     };
     use kuroya_core::{
-        EditorSettings, ProjectIndex, ProjectSearchIndex, SearchMatch, SearchResult, SearchStats,
-        TextBuffer, Workspace,
+        EditorSettings, ProjectIndex, SearchMatch, SearchResult, SearchStats, TextBuffer, Workspace,
     };
     use std::{
         fs,
@@ -576,8 +694,42 @@ mod tests {
 
         assert_eq!(app.index.files(), index.files());
         assert_eq!(app.project_index_generation, 1);
-        assert_eq!(app.project_search_index_generation, 0);
+        assert_eq!(app.project_search_index_generation, 1);
         assert_eq!(app.status, workspace_cached_index_status(1, false));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cached_index_event_invalidates_active_search_generation() {
+        let root = temp_root("cached-index-invalidates-search");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let mut app = app_for_test(root.clone());
+        app.workspace_index_active_request_id = 7;
+        app.project_search_active_request_id = 9;
+        app.project_search_query = "needle".to_owned();
+        let search_generation = app.project_search_index_generation;
+
+        assert!(handle_cached_index_event(
+            &mut app,
+            7,
+            root.clone(),
+            ProjectIndex::rebuild(&root, 40_000),
+        ));
+
+        assert!(!handle_search_finished_event(
+            &mut app,
+            9,
+            search_generation,
+            root.clone(),
+            "needle".to_owned(),
+            false,
+            false,
+            Vec::new(),
+            Vec::new(),
+            search_result_with_one_match(root.join("src/main.rs")),
+        ));
+        assert!(app.project_search_result.matches.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -609,7 +761,6 @@ mod tests {
             7,
             root.clone(),
             ProjectIndex::default(),
-            ProjectSearchIndex::default(),
         ));
         assert_eq!(app.project_search_index_generation, 1);
 
@@ -618,7 +769,6 @@ mod tests {
             6,
             root,
             ProjectIndex::default(),
-            ProjectSearchIndex::default(),
         ));
         assert_eq!(app.project_search_index_generation, 1);
     }
@@ -855,11 +1005,10 @@ mod tests {
                     skipped_large_files: 2,
                     skipped_binary_files: 1,
                     skipped_unreadable_files: 1,
-                    skipped_index_budget_files: 3,
                     ..SearchStats::default()
                 }
             ),
-            "2 project matches (results truncated; skipped 7 files: 2 large, 1 binary, 1 unreadable, 3 budget-limited)"
+            "2 project matches (results truncated; skipped 4 files: 2 large, 1 binary, 1 unreadable)"
         );
     }
 
@@ -870,14 +1019,13 @@ mod tests {
                 4,
                 false,
                 SearchStats {
-                    skipped_index_budget_files: 4,
                     skipped_unreadable_files: 3,
                     skipped_binary_files: 2,
                     skipped_large_files: 1,
                     ..SearchStats::default()
                 }
             ),
-            "4 project matches (skipped 10 files: 1 large, 2 binary, 3 unreadable, 4 budget-limited)"
+            "4 project matches (skipped 6 files: 1 large, 2 binary, 3 unreadable)"
         );
     }
 

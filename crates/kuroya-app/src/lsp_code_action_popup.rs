@@ -8,7 +8,7 @@ use crate::{
         selection_page_step,
     },
 };
-use eframe::egui::{self, Align, Color32, Context, Id, Key, RichText, ScrollArea};
+use eframe::egui::{self, Align, Context, Id, Key, RichText, ScrollArea};
 use kuroya_core::{
     LspCodeAction, LspTextEdit, LspWorkspaceDocumentChange, LspWorkspaceResourceOperation,
 };
@@ -43,7 +43,7 @@ impl KuroyaApp {
                     ui.label(
                         RichText::new(target)
                             .small()
-                            .color(Color32::from_rgb(126, 136, 150)),
+                            .color(ui.visuals().weak_text_color()),
                     );
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         if popup_button(ui, "Close", PopupButtonKind::Secondary).clicked() {
@@ -57,12 +57,13 @@ impl KuroyaApp {
                 }
                 let row_height = ui.spacing().interact_size.y;
                 let visible_action_count = visible_code_action_count(self.code_actions.len());
+                let navigation_page_step = selection_page_step(row_height, ui.available_height());
                 let selection_changed = ui.input(|input| {
                     handle_list_navigation_keys(
                         input,
                         &mut self.code_actions_selected,
                         visible_action_count,
-                        selection_page_step(row_height, ui.available_height()),
+                        navigation_page_step,
                     )
                 });
                 let enter_pressed = ui.input(|input| input.key_pressed(Key::Enter));
@@ -118,7 +119,7 @@ impl KuroyaApp {
                                 self.code_actions.len(),
                             ))
                             .small()
-                            .color(Color32::from_rgb(126, 136, 150)),
+                            .color(ui.visuals().weak_text_color()),
                         );
                     }
                 }

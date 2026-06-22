@@ -42,6 +42,7 @@ fn icon_family(icon: IconKind) -> IconFamily {
         | IconKind::Diagnostics
         | IconKind::Lsp
         | IconKind::Cursor
+        | IconKind::Keyboard
         | IconKind::Theme
         | IconKind::Code
         | IconKind::Settings => IconFamily::Tools,
@@ -181,6 +182,7 @@ mod tests {
             IconKind::Diagnostics,
             IconKind::Lsp,
             IconKind::Cursor,
+            IconKind::Keyboard,
             IconKind::Theme,
             IconKind::Code,
             IconKind::Settings,

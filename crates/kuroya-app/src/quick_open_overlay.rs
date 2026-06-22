@@ -25,6 +25,7 @@ const QUICK_OPEN_WINDOW_MARGIN: [f32; 2] = [32.0, 96.0];
 
 impl KuroyaApp {
     pub(crate) fn render_quick_open(&mut self, ctx: &Context) {
+        self.ensure_workspace_index_started();
         let mut open_target = None;
 
         egui::Window::new("Quick Open")
@@ -87,14 +88,14 @@ impl KuroyaApp {
 
                     if row_count == 0 {
                         let message = quick_open_empty_state_message(indexing_pending);
-                        ScrollArea::vertical().show(ui, |ui| {
+                        quick_open_scroll_area().show(ui, |ui| {
                             ui.add_space(20.0);
                             ui.centered_and_justified(|ui| {
                                 ui.label(message);
                             });
                         });
                     } else {
-                        let mut scroll_area = ScrollArea::vertical();
+                        let mut scroll_area = quick_open_scroll_area();
                         if scroll_to_selection {
                             scroll_area =
                                 scroll_area.vertical_scroll_offset(selected_row_scroll_offset(
@@ -122,7 +123,7 @@ impl KuroyaApp {
                 } else {
                     selected = 0;
                     let message = quick_open_empty_state_message(indexing_pending);
-                    ScrollArea::vertical().show(ui, |ui| {
+                    quick_open_scroll_area().show(ui, |ui| {
                         ui.add_space(20.0);
                         ui.centered_and_justified(|ui| {
                             ui.label(message);
@@ -259,6 +260,11 @@ fn quick_open_empty_state_message(indexing_pending: bool) -> &'static str {
     } else {
         "No matching files"
     }
+}
+
+fn quick_open_scroll_area() -> ScrollArea {
+    ScrollArea::vertical()
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 }
 
 fn quick_open_window_size(ctx: &Context) -> [f32; 2] {

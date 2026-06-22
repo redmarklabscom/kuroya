@@ -74,6 +74,7 @@ pub(crate) fn paint_row_gutter(
             row.scm_diff_decorations_gutter_width,
             visible_change_kind,
             row.scm_diff_decorations_gutter_pattern,
+            ui.visuals().code_bg_color,
         );
 
         if let Some(severity) = row.diagnostics_by_line.get(&line_number).copied() {
@@ -182,7 +183,7 @@ fn diff_indicator_color(indicator: &str) -> Color32 {
     match indicator {
         "+" => Color32::from_rgb(116, 199, 154),
         "-" => Color32::from_rgb(232, 98, 98),
-        _ => Color32::from_rgb(126, 136, 150),
+        _ => Color32::TRANSPARENT,
     }
 }
 
@@ -313,12 +314,15 @@ fn diff_line_can_show_gutter_action(line_text: &str) -> bool {
     }
 }
 
-pub(crate) fn line_change_marker_color(kind: Option<GitLineChangeKind>) -> Color32 {
+pub(crate) fn line_change_marker_color(
+    kind: Option<GitLineChangeKind>,
+    fallback: Color32,
+) -> Color32 {
     match kind {
         Some(GitLineChangeKind::Added) => Color32::from_rgb(76, 175, 80),
         Some(GitLineChangeKind::Modified) => Color32::from_rgb(91, 141, 239),
         Some(GitLineChangeKind::Deleted) => Color32::from_rgb(232, 98, 98),
-        None => Color32::from_rgb(35, 39, 46),
+        None => fallback,
     }
 }
 
@@ -329,13 +333,14 @@ fn paint_line_change_marker(
     marker_width: usize,
     kind: Option<GitLineChangeKind>,
     pattern: ScmDiffDecorationsGutterPattern,
+    fallback_color: Color32,
 ) {
     let marker_rect = line_change_marker_rect(rect, row_height, marker_width);
     if marker_rect.height() <= 0.0 {
         return;
     }
 
-    let color = line_change_marker_color(kind);
+    let color = line_change_marker_color(kind, fallback_color);
     if let Some(kind) = kind
         && line_change_marker_uses_pattern(kind, pattern)
     {
@@ -1206,20 +1211,29 @@ mod tests {
     #[test]
     fn line_change_marker_colors_distinguish_git_change_kinds() {
         assert_eq!(
-            line_change_marker_color(Some(GitLineChangeKind::Added)),
+            line_change_marker_color(
+                Some(GitLineChangeKind::Added),
+                Color32::from_rgb(35, 39, 46)
+            ),
             Color32::from_rgb(76, 175, 80)
         );
         assert_eq!(
-            line_change_marker_color(Some(GitLineChangeKind::Modified)),
+            line_change_marker_color(
+                Some(GitLineChangeKind::Modified),
+                Color32::from_rgb(35, 39, 46)
+            ),
             Color32::from_rgb(91, 141, 239)
         );
         assert_eq!(
-            line_change_marker_color(Some(GitLineChangeKind::Deleted)),
+            line_change_marker_color(
+                Some(GitLineChangeKind::Deleted),
+                Color32::from_rgb(35, 39, 46)
+            ),
             Color32::from_rgb(232, 98, 98)
         );
         assert_eq!(
-            line_change_marker_color(None),
-            Color32::from_rgb(35, 39, 46)
+            line_change_marker_color(None, Color32::from_rgb(220, 225, 232)),
+            Color32::from_rgb(220, 225, 232)
         );
     }
 }

@@ -14,8 +14,7 @@ use kuroya_core::{
     MAX_DIFF_SPLIT_VIEW_DEFAULT_RATIO, MAX_EDITOR_FOLDING_MAXIMUM_REGIONS,
     MAX_EDITOR_MINIMAP_MAX_COLUMN, MAX_EDITOR_MINIMAP_SCALE,
     MAX_EDITOR_MINIMAP_SECTION_HEADER_FONT_SIZE, MAX_EDITOR_MINIMAP_SECTION_HEADER_LETTER_SPACING,
-    MAX_EDITOR_RULER_COLUMN, MAX_EDITOR_SELECTION_HIGHLIGHT_MAX_LENGTH,
-    MAX_EDITOR_STICKY_SCROLL_MAX_LINE_COUNT, MAX_GIT_AUTOFETCH_PERIOD,
+    MAX_EDITOR_RULER_COLUMN, MAX_EDITOR_STICKY_SCROLL_MAX_LINE_COUNT, MAX_GIT_AUTOFETCH_PERIOD,
     MAX_GIT_COMMIT_SHORT_HASH_LENGTH, MAX_GIT_DETECT_SUBMODULES_LIMIT,
     MAX_GIT_DETECT_WORKTREES_LIMIT, MAX_GIT_INPUT_VALIDATION_LENGTH,
     MAX_GIT_REPOSITORY_SCAN_MAX_DEPTH, MAX_GIT_SIMILARITY_THRESHOLD, MAX_GIT_STATUS_LIMIT,
@@ -27,8 +26,8 @@ use kuroya_core::{
     MIN_DIFF_SPLIT_VIEW_DEFAULT_RATIO, MIN_EDITOR_FOLDING_MAXIMUM_REGIONS,
     MIN_EDITOR_MINIMAP_MAX_COLUMN, MIN_EDITOR_MINIMAP_SCALE,
     MIN_EDITOR_MINIMAP_SECTION_HEADER_FONT_SIZE, MIN_EDITOR_MINIMAP_SECTION_HEADER_LETTER_SPACING,
-    MIN_EDITOR_SELECTION_HIGHLIGHT_MAX_LENGTH, MIN_EDITOR_STICKY_SCROLL_MAX_LINE_COUNT,
-    MIN_GIT_AUTOFETCH_PERIOD, MIN_GIT_COMMIT_SHORT_HASH_LENGTH, MIN_GIT_DETECT_SUBMODULES_LIMIT,
+    MIN_EDITOR_STICKY_SCROLL_MAX_LINE_COUNT, MIN_GIT_AUTOFETCH_PERIOD,
+    MIN_GIT_COMMIT_SHORT_HASH_LENGTH, MIN_GIT_DETECT_SUBMODULES_LIMIT,
     MIN_GIT_DETECT_WORKTREES_LIMIT, MIN_GIT_INPUT_VALIDATION_LENGTH,
     MIN_GIT_REPOSITORY_SCAN_MAX_DEPTH, MIN_GIT_SIMILARITY_THRESHOLD, MIN_GIT_STATUS_LIMIT,
     MIN_SCM_DIFF_DECORATIONS_GUTTER_WIDTH, MIN_SCM_GRAPH_PAGE_SIZE, MIN_SCM_INPUT_FONT_SIZE,
@@ -204,32 +203,6 @@ pub(super) fn render_code_view_settings_with_highlight(
 
             ui.label("Match brackets");
             editor_match_brackets_combo(ui, "editor_match_brackets", &mut draft.match_brackets);
-            ui.end_row();
-
-            ui.label("Selection highlight");
-            ui.checkbox(
-                &mut draft.selection_highlight,
-                "Highlight text matching the active selection",
-            );
-            ui.end_row();
-
-            ui.label("Selection highlight max");
-            ui.add(
-                egui::DragValue::new(&mut draft.selection_highlight_max_length)
-                    .speed(1.0)
-                    .range(
-                        MIN_EDITOR_SELECTION_HIGHLIGHT_MAX_LENGTH
-                            ..=MAX_EDITOR_SELECTION_HIGHLIGHT_MAX_LENGTH,
-                    ),
-            )
-            .on_hover_text("Use 0 to highlight selections of any length");
-            ui.end_row();
-
-            ui.label("Multiline selection highlight");
-            ui.checkbox(
-                &mut draft.selection_highlight_multiline,
-                "Highlight matches for multiline selections",
-            );
             ui.end_row();
 
             ui.label("Find from selection");

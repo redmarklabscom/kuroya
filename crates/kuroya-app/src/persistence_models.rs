@@ -17,7 +17,7 @@ use crate::{
     },
     source_control_panel::SOURCE_CONTROL_COMMIT_HISTORY_LIMIT,
 };
-use kuroya_core::{BufferHistorySnapshot, Command};
+use kuroya_core::{BufferHistorySnapshot, Command, EditorVimSettings};
 use serde::{
     Deserialize, Deserializer, Serialize,
     de::{IgnoredAny, SeqAccess, Visitor},
@@ -49,6 +49,8 @@ pub struct AppState {
     pub trusted_workspaces: Vec<PathBuf>,
     #[serde(default)]
     pub vim_keybindings: Option<bool>,
+    #[serde(default)]
+    pub vim: Option<EditorVimSettings>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

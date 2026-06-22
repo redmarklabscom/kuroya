@@ -39,6 +39,7 @@ pub enum Command {
     ToggleReadOnly,
     ToggleMinimap,
     ToggleStickyScroll,
+    ToggleVimMode,
     ReloadSettings,
     CheckForUpdates,
     OpenSettingsFile,

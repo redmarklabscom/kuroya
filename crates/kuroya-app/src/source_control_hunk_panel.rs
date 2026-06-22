@@ -7,7 +7,7 @@ use crate::{
         selected_row_scroll_offset, selection_page_step,
     },
 };
-use eframe::egui::{self, Color32, Context, InputState, Key, RichText, ScrollArea};
+use eframe::egui::{self, Context, InputState, Key, RichText, ScrollArea};
 use kuroya_core::{Command, GitChangeStage, GitDiffHunk};
 use std::{borrow::Cow, fmt::Write as _, path::Path};
 
@@ -194,7 +194,7 @@ impl KuroyaApp {
                     ui.label(
                         RichText::new(format!("{} hunks", self.source_control_hunks.len()))
                             .small()
-                            .color(Color32::from_rgb(126, 136, 150)),
+                            .color(ui.visuals().weak_text_color()),
                     );
                 });
             });

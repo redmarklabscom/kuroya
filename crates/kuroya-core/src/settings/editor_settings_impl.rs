@@ -58,6 +58,7 @@ impl Default for EditorSettings {
             rename_on_type: false,
             tab_focus_mode: false,
             vim_keybindings: false,
+            vim: EditorVimSettings::default(),
             quick_suggestions: false,
             quick_suggestions_delay_ms: DEFAULT_QUICK_SUGGESTIONS_DELAY_MS,
             suggest_on_trigger_characters: true,
@@ -138,8 +139,6 @@ impl Default for EditorSettings {
                 EditorInlineSuggestShowOnSuggestConflict::default(),
             inline_suggest_experimental_empty_response_information: true,
             inline_completions_accessibility_verbose: false,
-            occurrences_highlight: EditorOccurrencesHighlight::default(),
-            occurrences_highlight_delay_ms: DEFAULT_OCCURRENCES_HIGHLIGHT_DELAY_MS,
             lightbulb: EditorLightbulbMode::default(),
             render_validation_decorations: EditorRenderValidationDecorations::default(),
             document_highlights_enabled: true,
@@ -251,6 +250,7 @@ impl Default for EditorSettings {
             status_bar_visible: true,
             devtools_verbose_logging: false,
             devtools_profiling_enabled: false,
+            lsp_servers: Vec::new(),
             window_zoom_level: DEFAULT_WINDOW_ZOOM_LEVEL,
             line_numbers: EditorLineNumbers::default(),
             line_decorations_width: EditorLineDecorationsWidth::default(),
@@ -286,9 +286,6 @@ impl Default for EditorSettings {
             ]),
             render_line_highlight: EditorRenderLineHighlight::default(),
             render_line_highlight_only_when_focus: false,
-            selection_highlight: true,
-            selection_highlight_max_length: DEFAULT_EDITOR_SELECTION_HIGHLIGHT_MAX_LENGTH,
-            selection_highlight_multiline: false,
             smart_select_select_leading_and_trailing_whitespace: true,
             smart_select_select_subwords: true,
             find_seed_search_string_from_selection:
@@ -546,6 +543,8 @@ impl Default for EditorSettings {
             trim_final_newlines: false,
             updates_github_repository: String::new(),
             theme: ThemeSettings::default(),
+            custom_theme_paths: Vec::new(),
+            active_custom_theme_path: None,
         }
     }
 }
@@ -557,6 +556,10 @@ impl EditorSettings {
         } else {
             EditorAutoSaveMode::Off
         }
+    }
+
+    pub fn lsp_server_configs(&self) -> Vec<LspServerConfig> {
+        effective_lsp_server_configs(&self.lsp_servers)
     }
 
     pub(super) fn sanitize(&mut self) -> bool {
@@ -603,6 +606,7 @@ impl EditorSettings {
             SETTINGS_MAP_KEY_MAX_CHARS,
             true,
         );
+        changed |= self.vim.sanitize();
 
         field!(
             quick_suggestions_delay_ms,
@@ -628,10 +632,6 @@ impl EditorSettings {
         );
         changed |= sanitize_settings_plain_string(
             &mut self.inline_suggest_experimental_suppress_inline_suggestions,
-        );
-        field!(
-            occurrences_highlight_delay_ms,
-            clamp_occurrences_highlight_delay_ms(self.occurrences_highlight_delay_ms),
         );
         changed |= sanitize_settings_plain_string(&mut self.code_lens_font_family);
         field!(
@@ -739,6 +739,7 @@ impl EditorSettings {
             window_zoom_level,
             clamp_window_zoom_level(self.window_zoom_level),
         );
+        changed |= sanitize_lsp_server_configs(&mut self.lsp_servers);
         field!(
             line_decorations_width,
             self.line_decorations_width.clamped(),
@@ -761,10 +762,6 @@ impl EditorSettings {
         );
         changed |= sanitize_settings_bool_map(&mut self.unicode_highlight_allowed_characters);
         changed |= sanitize_settings_bool_map(&mut self.unicode_highlight_allowed_locales);
-        field!(
-            selection_highlight_max_length,
-            clamp_editor_selection_highlight_max_length(self.selection_highlight_max_length),
-        );
 
         field!(
             diff_context_lines,
@@ -1002,6 +999,22 @@ impl EditorSettings {
 
         changed |= self.keymap.sanitize() > 0;
         changed |= sanitize_settings_plain_string(&mut self.updates_github_repository);
+        changed |= sanitize_settings_string_list(
+            &mut self.custom_theme_paths,
+            SETTINGS_LIST_MAX_ITEMS,
+            SETTINGS_STRING_MAX_CHARS,
+            true,
+        );
+        changed |= sanitize_settings_optional_string(&mut self.active_custom_theme_path);
+        if let Some(active_path) = self.active_custom_theme_path.as_deref()
+            && !self
+                .custom_theme_paths
+                .iter()
+                .any(|path| path == active_path)
+        {
+            self.active_custom_theme_path = None;
+            changed = true;
+        }
 
         changed
     }
@@ -1121,4 +1134,144 @@ impl EditorSettings {
         self.schema_version = SETTINGS_SCHEMA_VERSION;
         changed || source_version < SETTINGS_SCHEMA_VERSION
     }
+}
+
+impl EditorVimSettings {
+    pub fn sanitize(&mut self) -> bool {
+        let mut changed = sanitize_settings_string_list(
+            &mut self.disabled_bindings,
+            SETTINGS_LIST_MAX_ITEMS,
+            SETTINGS_MAP_KEY_MAX_CHARS,
+            true,
+        );
+
+        let original = std::mem::take(&mut self.key_overrides);
+        let mut normalized = Vec::with_capacity(original.len().min(SETTINGS_LIST_MAX_ITEMS));
+        let mut seen = Vec::new();
+        changed |= original.len() > SETTINGS_LIST_MAX_ITEMS;
+
+        for mut binding in original {
+            if normalized.len() >= SETTINGS_LIST_MAX_ITEMS {
+                changed = true;
+                continue;
+            }
+
+            let original_binding = binding.clone();
+            binding.before =
+                normalize_settings_plain_string(&binding.before, SETTINGS_MAP_KEY_MAX_CHARS, true);
+            binding.after =
+                normalize_settings_plain_string(&binding.after, SETTINGS_MAP_KEY_MAX_CHARS, true);
+            let command_changed = binding
+                .command
+                .as_mut()
+                .map(|command| command.normalize_keymap_metadata())
+                .unwrap_or(false);
+            if binding
+                .command
+                .as_ref()
+                .is_some_and(|command| !command.is_stable_keymap_command())
+            {
+                changed = true;
+                continue;
+            }
+            if binding.before.is_empty() || (binding.after.is_empty() && binding.command.is_none())
+            {
+                changed = true;
+                continue;
+            }
+            if seen.iter().any(|before: &String| before == &binding.before) {
+                changed = true;
+                continue;
+            }
+
+            changed |= command_changed || binding != original_binding;
+            seen.push(binding.before.clone());
+            normalized.push(binding);
+        }
+
+        self.key_overrides = normalized;
+        changed
+    }
+}
+
+fn sanitize_lsp_server_configs(servers: &mut Vec<LspServerConfig>) -> bool {
+    let original = std::mem::take(servers);
+    let mut normalized: Vec<LspServerConfig> =
+        Vec::with_capacity(original.len().min(SETTINGS_LIST_MAX_ITEMS));
+    let mut changed = original.len() > SETTINGS_LIST_MAX_ITEMS;
+
+    for mut server in original {
+        if normalized.len() >= SETTINGS_LIST_MAX_ITEMS {
+            changed = true;
+            continue;
+        }
+
+        let original_server = server.clone();
+        server.language =
+            normalize_settings_plain_string(&server.language, SETTINGS_MAP_KEY_MAX_CHARS, true);
+        server.language.make_ascii_lowercase();
+        server.command =
+            normalize_settings_plain_string(&server.command, SETTINGS_STRING_MAX_CHARS, true);
+        changed |= sanitize_settings_string_list(
+            &mut server.args,
+            SETTINGS_LIST_MAX_ITEMS,
+            SETTINGS_STRING_MAX_CHARS,
+            false,
+        );
+        changed |= sanitize_settings_string_list(
+            &mut server.extensions,
+            SETTINGS_LIST_MAX_ITEMS,
+            SETTINGS_STRING_MAX_CHARS,
+            true,
+        );
+        changed |= normalize_lsp_server_extensions(&mut server.extensions);
+        changed |= sanitize_settings_string_list(
+            &mut server.root_markers,
+            SETTINGS_LIST_MAX_ITEMS,
+            SETTINGS_STRING_MAX_CHARS,
+            true,
+        );
+
+        if server.language.is_empty() || server.command.is_empty() {
+            changed = true;
+            continue;
+        }
+
+        changed |= server != original_server;
+        if let Some(index) = normalized
+            .iter()
+            .position(|existing| existing.language == server.language)
+        {
+            normalized[index] = server;
+            changed = true;
+        } else {
+            normalized.push(server);
+        }
+    }
+
+    *servers = normalized;
+    changed
+}
+
+fn normalize_lsp_server_extensions(extensions: &mut Vec<String>) -> bool {
+    let original = std::mem::take(extensions);
+    let mut normalized = Vec::with_capacity(original.len());
+    let mut changed = false;
+
+    for extension in original {
+        let trimmed = extension.trim_start_matches('.').to_owned();
+        if trimmed.is_empty() {
+            changed = true;
+            continue;
+        }
+        changed |= trimmed != extension;
+        if normalized.contains(&trimmed) {
+            changed = true;
+            continue;
+        }
+        normalized.push(trimmed);
+    }
+
+    *extensions = normalized;
+    changed
 }

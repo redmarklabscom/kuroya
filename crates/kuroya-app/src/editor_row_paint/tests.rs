@@ -2,21 +2,22 @@ use super::{
     MAX_WHITESPACE_SELECTION_RANGES_PER_ROW, RowTextMetrics, SelectionRangeCursor,
     VisualColumnScanner, WhitespaceMarker, WhitespaceMarkerKind, WhitespaceMarkerPaintStrategy,
     active_indent_guide_column, active_indent_guide_column_for_buffer, color_decorators_visible,
-    control_character_label, diff_empty_decoration_fill, diff_empty_decoration_visible,
-    diff_move_decoration_fill, diff_move_decoration_stripe_fill, diff_move_decoration_visible,
-    editor_row_line_snapshot, editor_row_wrap_width, folded_region_highlight_fill,
-    folded_region_highlight_visible, hex_color_decorations, injected_language_render_rect,
-    injected_language_render_rect_with_scanner, leading_indent_guide_columns,
-    limit_layout_job_line_rendering, line_highlight_visible, merge_conflict_line_fill,
-    parse_hex_color, rendered_trailing_whitespace_start, row_text_metrics,
-    selection_ranges_for_snapshot, trailing_whitespace_start, visible_whitespace_marker,
+    column_ruler_color, control_character_label, diff_empty_decoration_fill,
+    diff_empty_decoration_visible, diff_move_decoration_fill, diff_move_decoration_stripe_fill,
+    diff_move_decoration_visible, editor_row_line_snapshot, editor_row_wrap_width,
+    folded_region_highlight_fill, folded_region_highlight_visible, hex_color_decorations,
+    indent_guide_color, injected_language_render_rect, injected_language_render_rect_with_scanner,
+    leading_indent_guide_columns, limit_layout_job_line_rendering, line_highlight_fill,
+    line_highlight_visible, merge_conflict_line_fill, parse_hex_color,
+    rendered_trailing_whitespace_start, row_text_metrics, selection_ranges_for_snapshot,
+    trailing_whitespace_start, visible_whitespace_marker,
     whitespace_marker_kind_for_selection_ranges, whitespace_marker_label,
     whitespace_marker_paint_strategy, whitespace_marker_scan_needed,
     whitespace_marker_trailing_start, whitespace_selection_marker_scan_needed,
     whitespace_selection_ranges_for_marker_scan, whitespace_selection_ranges_for_snapshot,
 };
 use crate::syntax_tree_cache::TreeSitterInjection;
-use eframe::egui::{Rect, TextFormat, pos2, text::LayoutJob};
+use eframe::egui::{Color32, Rect, TextFormat, pos2, text::LayoutJob};
 use kuroya_core::{
     EditorColorDecoratorsActivatedOn, EditorDefaultColorDecorators,
     EditorExperimentalWhitespaceRendering, EditorRenderWhitespace, EditorWordWrap, LanguageId,
@@ -287,6 +288,32 @@ fn line_highlight_can_require_focus() {
 }
 
 #[test]
+fn editor_row_chrome_colors_follow_theme_visuals() {
+    let mut visuals = eframe::egui::Visuals::light();
+    visuals.widgets.active.weak_bg_fill = Color32::from_rgb(208, 215, 224);
+    visuals.widgets.noninteractive.bg_stroke.color = Color32::from_rgb(178, 188, 200);
+    visuals.widgets.inactive.bg_stroke.color = Color32::from_rgb(188, 198, 210);
+    visuals.selection.stroke.color = Color32::from_rgb(47, 111, 237);
+
+    assert_eq!(
+        line_highlight_fill(&visuals),
+        visuals.widgets.active.weak_bg_fill
+    );
+    assert_eq!(
+        column_ruler_color(&visuals),
+        visuals.widgets.noninteractive.bg_stroke.color
+    );
+    assert_eq!(
+        indent_guide_color(&visuals, false),
+        visuals.widgets.inactive.bg_stroke.color
+    );
+    assert_eq!(
+        indent_guide_color(&visuals, true),
+        visuals.selection.stroke.color
+    );
+}
+
+#[test]
 fn editor_ime_output_requires_editable_text_input() {
     assert!(super::editor_ime_output_enabled(true, false));
     assert!(!super::editor_ime_output_enabled(false, false));
@@ -298,7 +325,7 @@ fn folded_region_highlight_follows_setting_and_fold_state() {
     assert!(folded_region_highlight_visible(true, true));
     assert!(!folded_region_highlight_visible(false, true));
     assert!(!folded_region_highlight_visible(true, false));
-    assert!(folded_region_highlight_fill().a() > 0);
+    assert!(folded_region_highlight_fill(Color32::from_rgb(126, 136, 150)).a() > 0);
 }
 
 #[test]

@@ -302,7 +302,6 @@ fn stale_indexed_event_from_other_workspace_does_not_clear_current_in_flight_ind
             request_id: 1,
             root: PathBuf::from("old-workspace"),
             index: ProjectIndex::default(),
-            search_index: ProjectSearchIndex::default(),
         }
     ));
 
@@ -326,7 +325,6 @@ fn stale_same_root_indexed_event_after_reset_does_not_clear_current_in_flight_in
             request_id: 1,
             root,
             index: ProjectIndex::default(),
-            search_index: ProjectSearchIndex::default(),
         }
     ));
 
@@ -350,7 +348,6 @@ fn equivalent_root_indexed_event_finishes_in_flight_index() {
             request_id: 1,
             root: event_root,
             index: ProjectIndex::default(),
-            search_index: ProjectSearchIndex::default(),
         }
     ));
 
@@ -377,7 +374,6 @@ fn current_root_stale_indexed_event_drains_queued_refresh_without_applying_resul
             request_id: 1,
             root,
             index: ProjectIndex::default(),
-            search_index: ProjectSearchIndex::default(),
         }
     ));
 
@@ -405,7 +401,6 @@ fn equivalent_root_stale_indexed_event_drains_queued_refresh_without_applying_re
             request_id: 1,
             root: event_root,
             index: ProjectIndex::default(),
-            search_index: ProjectSearchIndex::default(),
         }
     ));
 

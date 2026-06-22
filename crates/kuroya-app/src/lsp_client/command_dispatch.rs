@@ -134,7 +134,7 @@ mod tests {
         lsp_client::{commands::LspClientCommand, pending::PendingLspRequest},
         ui_event_channel::ui_event_channel,
     };
-    use kuroya_core::{LanguageId, LspRequestId, TextBuffer};
+    use kuroya_core::{LspRequestId, TextBuffer};
     use std::{collections::HashMap, path::PathBuf, process::Stdio};
     use tokio::process::{Child, ChildStdin, Command};
 
@@ -296,7 +296,7 @@ mod tests {
             &LspClientCommand::DidOpen {
                 id: 1,
                 path: PathBuf::from("src/main.rs"),
-                language: LanguageId::Rust,
+                language: "rust".to_owned(),
                 version: 0,
                 text: text_snapshot("open"),
             }
@@ -321,7 +321,7 @@ mod tests {
             Some(LspClientCommand::DidOpen {
                 id: 0,
                 path: PathBuf::from("src/main.rs"),
-                language: LanguageId::Rust,
+                language: "rust".to_owned(),
                 version: 1,
                 text: text_snapshot("open"),
             }),

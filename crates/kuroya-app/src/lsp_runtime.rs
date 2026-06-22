@@ -1,18 +1,18 @@
 use crate::{
     KuroyaApp,
     lsp_client::{LspClientHandle, can_use_server_for_path},
-    lsp_lifecycle::background_language_block_reason,
+    lsp_lifecycle::{background_language_block_reason, lsp_server_config_for_buffer},
     lsp_text_positions::buffer_position_to_lsp_utf16_column,
     path_display::{display_error_label_cow, display_path_label_cow, sanitized_display_label_cow},
 };
 use kuroya_core::{
-    BufferId, LanguageId, LspServerConfig, TextBuffer, default_server_configs, lsp_language_id,
+    BufferId, EditorSettings, LanguageId, LspServerConfig, PluginLanguageRegistry, TextBuffer,
+    server_config_for_language as core_server_config_for_language,
 };
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -24,7 +24,6 @@ pub(crate) const LSP_SYMBOL_REFRESH_DEBOUNCE: Duration = Duration::from_millis(2
 pub(crate) const LSP_LANGUAGE_LABEL_MAX_CHARS: usize = 64;
 pub(crate) const LSP_STATUS_MESSAGE_MAX_CHARS: usize = 160;
 const LSP_METHOD_LABEL_MAX_CHARS: usize = 96;
-static LSP_SERVER_CONFIGS: OnceLock<Vec<LspServerConfig>> = OnceLock::new();
 
 pub(crate) fn lsp_command_queue_failed_status(method: &str) -> String {
     format!(
@@ -129,14 +128,15 @@ pub(crate) enum LspRestartDecision {
     Disable,
 }
 
+pub(crate) fn lsp_server_configs_for_settings(settings: &EditorSettings) -> Vec<LspServerConfig> {
+    settings.lsp_server_configs()
+}
+
 pub(crate) fn lsp_server_config_for_language(
+    configs: &[LspServerConfig],
     language: LanguageId,
-) -> Option<&'static LspServerConfig> {
-    let wanted = lsp_language_id(language);
-    LSP_SERVER_CONFIGS
-        .get_or_init(default_server_configs)
-        .iter()
-        .find(|config| config.language == wanted)
+) -> Option<&LspServerConfig> {
+    core_server_config_for_language(configs, language)
 }
 
 impl KuroyaApp {
@@ -145,6 +145,7 @@ impl KuroyaApp {
             return None;
         }
 
+        let lsp_configs = lsp_server_configs_for_settings(&self.settings);
         let config = {
             let buffer = self.buffer(id)?;
             if background_language_block_reason(
@@ -157,7 +158,8 @@ impl KuroyaApp {
             {
                 return None;
             }
-            let config = lsp_server_config_for_language(buffer.language())?;
+            let (config, _) =
+                lsp_server_config_for_buffer(&lsp_configs, &self.plugin_languages, buffer)?;
             if self.lsp_unavailable.contains(config.language.as_str()) {
                 return None;
             }
@@ -236,9 +238,12 @@ impl KuroyaApp {
                 continue;
             }
 
+            let lsp_configs = lsp_server_configs_for_settings(&self.settings);
             let restart_targets = lsp_restart_buffer_ids(
                 &language,
                 &self.buffers,
+                &lsp_configs,
+                &self.plugin_languages,
                 &self.workspace.root,
                 &self.lossy_decoded_buffers,
                 &self.binary_preview_buffers,
@@ -256,6 +261,74 @@ impl KuroyaApp {
             self.status = lsp_restart_requested_status(&language, restart_targets.len());
         }
         restarted
+    }
+
+    pub(crate) fn sync_lsp_server_settings_after_reload(
+        &mut self,
+        previous_settings: &EditorSettings,
+    ) -> usize {
+        let previous_configs = lsp_server_configs_for_settings(previous_settings);
+        let current_configs = lsp_server_configs_for_settings(&self.settings);
+        if previous_configs != current_configs {
+            return self.restart_lsp_clients_for_server_config_change(&current_configs);
+        }
+
+        if self.lsp_unavailable.is_empty() {
+            return 0;
+        }
+
+        let unavailable = std::mem::take(&mut self.lsp_unavailable);
+        self.lsp_restart_attempts
+            .retain(|language, _| !unavailable.contains(language));
+        self.pending_lsp_restarts
+            .retain(|language, _| !unavailable.contains(language));
+        self.reopen_lsp_buffers_for_languages(
+            unavailable.iter().map(String::as_str),
+            &current_configs,
+        )
+    }
+
+    fn restart_lsp_clients_for_server_config_change(
+        &mut self,
+        configs: &[LspServerConfig],
+    ) -> usize {
+        for (_, client) in self.lsp_clients.drain() {
+            client.shutdown();
+        }
+        self.lsp_unavailable.clear();
+        self.lsp_restart_attempts.clear();
+        self.pending_lsp_restarts.clear();
+        self.reopen_lsp_buffers_for_languages(
+            configs.iter().map(|config| config.language.as_str()),
+            configs,
+        )
+    }
+
+    fn reopen_lsp_buffers_for_languages<'a>(
+        &mut self,
+        languages: impl IntoIterator<Item = &'a str>,
+        configs: &[LspServerConfig],
+    ) -> usize {
+        let mut buffer_ids = Vec::new();
+        for language in languages {
+            buffer_ids.extend(lsp_restart_buffer_ids(
+                language,
+                &self.buffers,
+                configs,
+                &self.plugin_languages,
+                &self.workspace.root,
+                &self.lossy_decoded_buffers,
+                &self.binary_preview_buffers,
+            ));
+        }
+        buffer_ids.sort_unstable();
+        buffer_ids.dedup();
+
+        let reopened = buffer_ids.len();
+        for id in buffer_ids {
+            self.notify_lsp_open(id);
+        }
+        reopened
     }
 }
 
@@ -294,6 +367,8 @@ pub(crate) fn lsp_restart_decision(
 pub(crate) fn lsp_restart_buffer_ids(
     language: &str,
     buffers: &[TextBuffer],
+    configs: &[LspServerConfig],
+    plugin_languages: &PluginLanguageRegistry,
     root: &Path,
     lossy_buffers: &HashSet<BufferId>,
     binary_buffers: &HashSet<BufferId>,
@@ -307,12 +382,12 @@ pub(crate) fn lsp_restart_buffer_ids(
                 return None;
             }
 
-            if lsp_language_id(buffer.language()) != language {
+            let (config, _) = lsp_server_config_for_buffer(configs, plugin_languages, buffer)?;
+            if config.language != language {
                 return None;
             }
 
             let path = buffer.path()?;
-            let config = lsp_server_config_for_language(buffer.language())?;
             can_use_server_for_path(config, root, path).then_some(id)
         })
         .collect()
@@ -407,7 +482,7 @@ mod tests {
         take_due_lsp_restart_languages, take_due_lsp_symbol_refresh_ids,
     };
     use crate::path_display::sanitized_display_label;
-    use kuroya_core::{LanguageId, TextBuffer};
+    use kuroya_core::{EditorSettings, LanguageId, LspServerConfig, TextBuffer};
     use std::{
         borrow::Cow,
         collections::{HashMap, HashSet},
@@ -628,13 +703,23 @@ mod tests {
     }
 
     #[test]
-    fn lsp_server_config_lookup_reuses_cached_defaults() {
-        let first = lsp_server_config_for_language(LanguageId::Rust).expect("rust config");
-        let second = lsp_server_config_for_language(LanguageId::Rust).expect("rust config");
+    fn lsp_server_config_lookup_uses_effective_settings_configs() {
+        let mut settings = EditorSettings::default();
+        settings.lsp_servers.push(LspServerConfig {
+            language: "go".to_owned(),
+            command: "gopls".to_owned(),
+            args: Vec::new(),
+            extensions: Vec::new(),
+            root_markers: vec!["go.mod".to_owned()],
+        });
+        let configs = settings.lsp_server_configs();
+        let rust = lsp_server_config_for_language(&configs, LanguageId::Rust).expect("rust config");
+        let go = lsp_server_config_for_language(&configs, LanguageId::Go).expect("go config");
 
-        assert!(std::ptr::eq(first, second));
-        assert_eq!(first.language, "rust");
-        assert!(lsp_server_config_for_language(LanguageId::Markdown).is_none());
+        assert_eq!(rust.language, "rust");
+        assert_eq!(go.command, "gopls");
+        assert!(lsp_server_config_for_language(&configs, LanguageId::PlainText).is_none());
+        assert!(lsp_server_config_for_language(&configs, LanguageId::Diff).is_none());
     }
 
     #[test]

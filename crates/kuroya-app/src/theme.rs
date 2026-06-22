@@ -37,6 +37,7 @@ pub(crate) struct ThemePalette {
     pub(crate) text: egui::Color32,
     pub(crate) muted: egui::Color32,
     pub(crate) accent: egui::Color32,
+    pub(crate) selection: egui::Color32,
     pub(crate) warning: egui::Color32,
     pub(crate) error: egui::Color32,
 }
@@ -84,7 +85,11 @@ pub(crate) fn apply_theme(ctx: &Context, theme: &ThemeSettings) {
     visuals.widgets.active.weak_bg_fill = blend_color(panel_alt, text, 0.08);
     visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, border);
     visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, text);
-    visuals.selection.bg_fill = blend_color(panel_alt, text, 0.18);
+    visuals.widgets.open.bg_fill = panel_alt;
+    visuals.widgets.open.weak_bg_fill = panel_alt;
+    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, border);
+    visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, text);
+    visuals.selection.bg_fill = palette.selection;
     for widget in [
         &mut visuals.widgets.noninteractive,
         &mut visuals.widgets.inactive,
@@ -138,6 +143,10 @@ pub(crate) fn theme_palette(theme: &ThemeSettings) -> ThemePalette {
         ],
         MIN_ACCENT_CONTRAST,
     );
+    let selection = theme
+        .selection
+        .map(rgb)
+        .unwrap_or_else(|| derived_selection_fill(panel_alt, accent));
     let warning = readable_theme_color(
         rgb(theme.warning),
         panel,
@@ -168,9 +177,14 @@ pub(crate) fn theme_palette(theme: &ThemeSettings) -> ThemePalette {
         text,
         muted,
         accent,
+        selection,
         warning,
         error,
     }
+}
+
+fn derived_selection_fill(panel_alt: egui::Color32, accent: egui::Color32) -> egui::Color32 {
+    blend_color(panel_alt, accent, 0.36)
 }
 
 fn separated_surface_or(
@@ -233,6 +247,7 @@ pub(crate) fn next_built_in_theme_after(name: &str) -> ThemeSettings {
     themes[next].clone()
 }
 
+#[cfg(test)]
 pub(crate) fn selected_theme_index(theme: &ThemeSettings) -> usize {
     let name = theme.name.trim();
     built_in_themes()
@@ -408,6 +423,7 @@ mod tests {
         selected_theme_index, selected_theme_index_with_plugins, theme_display_label,
         theme_display_label_cow, theme_palette,
     };
+    use egui::Context;
     use kuroya_core::{
         PLUGIN_API_VERSION, PluginCapabilities, PluginContributions, PluginDescriptor,
         PluginManifest, PluginThemeContribution, PluginThemeRegistration, PluginThemeRegistry,
@@ -425,6 +441,7 @@ mod tests {
             text: [20, 20, 20],
             muted_text: [20, 20, 20],
             accent: [20, 20, 20],
+            selection: None,
             warning: [20, 20, 20],
             error: [20, 20, 20],
         });
@@ -438,6 +455,36 @@ mod tests {
         assert!(colors::contrast_ratio(palette.accent, palette.panel_alt) >= MIN_ACCENT_CONTRAST);
         assert!(colors::contrast_ratio(palette.warning, palette.panel) >= MIN_ACCENT_CONTRAST);
         assert!(colors::contrast_ratio(palette.error, palette.panel) >= MIN_ACCENT_CONTRAST);
+        assert_eq!(
+            palette.selection,
+            colors::blend_color(palette.panel_alt, palette.accent, 0.36)
+        );
+    }
+
+    #[test]
+    fn apply_theme_styles_open_window_header_visuals() {
+        let theme = ThemeSettings {
+            name: "Header".to_owned(),
+            background: [10, 12, 16],
+            panel: [21, 25, 32],
+            panel_alt: [38, 46, 58],
+            text: [235, 238, 244],
+            muted_text: [145, 153, 166],
+            accent: [82, 139, 255],
+            selection: None,
+            warning: [231, 185, 87],
+            error: [232, 98, 98],
+        };
+        let palette = theme_palette(&theme);
+        let ctx = Context::default();
+
+        super::apply_theme(&ctx, &theme);
+        let visuals = ctx.style().visuals.clone();
+
+        assert_eq!(visuals.window_fill, palette.panel);
+        assert_eq!(visuals.widgets.open.weak_bg_fill, palette.panel_alt);
+        assert_eq!(visuals.widgets.open.bg_fill, palette.panel_alt);
+        assert_eq!(visuals.widgets.open.fg_stroke.color, palette.text);
     }
 
     #[test]
@@ -853,5 +900,16 @@ mod tests {
         assert_eq!(palette.background, rgb(theme.background));
         assert_eq!(palette.text, rgb(theme.text));
         assert_eq!(palette.accent, rgb(theme.accent));
+    }
+
+    #[test]
+    fn theme_palette_uses_custom_selection_color() {
+        let theme = ThemeSettings {
+            selection: Some([18, 64, 118]),
+            ..ThemeSettings::default()
+        };
+        let palette = theme_palette(&theme);
+
+        assert_eq!(palette.selection, rgb([18, 64, 118]));
     }
 }

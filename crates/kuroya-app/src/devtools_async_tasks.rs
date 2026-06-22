@@ -18,7 +18,7 @@ use details::{
 };
 pub(crate) use details::{
     branch_operation_detail, branch_rename_detail, file_reload_task_detail, git_scan_task_detail,
-    hunk_detail, index_detail, path_detail, paths_detail,
+    hunk_detail, index_detail, path_detail, paths_detail, plugin_command_task_detail,
 };
 use eframe::egui::{self, RichText};
 use std::{
@@ -181,9 +181,6 @@ pub(crate) fn async_task_event_label(event: &UiEvent) -> Option<AsyncTaskEventLa
     match event {
         UiEvent::CachedIndex { .. } => None,
         UiEvent::Indexed { root, .. } => Some(finished("Index Workspace", path_detail(root))),
-        UiEvent::ProjectSearchIndexed { root, .. } => {
-            Some(finished("Project Search Index", path_detail(root)))
-        }
         UiEvent::FileLoaded { path, .. } | UiEvent::ImageFileLoaded { path, .. } => {
             Some(finished("File Load", path_detail(path)))
         }
@@ -229,6 +226,7 @@ pub(crate) fn async_task_event_label(event: &UiEvent) -> Option<AsyncTaskEventLa
         UiEvent::ExplorerOperationFailed { action, .. } => {
             Some(failed("Explorer Operation", explorer_action_detail(action)))
         }
+        UiEvent::SearchProgress { .. } => None,
         UiEvent::SearchFinished { query, .. } => {
             Some(finished("Project Search", query_detail(query)))
         }
@@ -408,6 +406,15 @@ pub(crate) fn async_task_event_label(event: &UiEvent) -> Option<AsyncTaskEventLa
         }
         UiEvent::WorkspacePluginsFailed { root, .. } => {
             Some(failed("Workspace Plugins", path_detail(root)))
+        }
+        UiEvent::PluginCommandFinished {
+            command_id, result, ..
+        } => {
+            let label = if result.is_ok() { finished } else { failed };
+            Some(label(
+                "Plugin Command",
+                plugin_command_task_detail(command_id),
+            ))
         }
         UiEvent::DiagnosticsComputed { path, .. } => {
             Some(finished("Static Diagnostics", path_detail(path)))
@@ -672,8 +679,8 @@ mod tests {
         MAX_ASYNC_TASK_DETAIL_CHARS, MAX_ASYNC_TASK_ELAPSED_MS, MAX_ASYNC_TASK_NAME_CHARS,
         async_task_diagnostic_stats, async_task_event_label, branch_rename_detail,
         file_reload_task_detail, finish_matching_async_task, git_scan_task_detail, hunk_detail,
-        index_detail, path_detail, paths_detail, push_active_async_task,
-        record_async_task_trace_entry,
+        index_detail, path_detail, paths_detail, plugin_command_task_detail,
+        push_active_async_task, record_async_task_trace_entry,
     };
     use crate::{
         source_control_patch_runtime::{
@@ -1079,6 +1086,34 @@ mod tests {
                 outcome: AsyncTaskOutcome::Finished,
             })
         );
+    }
+
+    #[test]
+    fn plugin_command_finished_label_matches_started_task_detail() {
+        let command_id = format!("run\n{}\u{202e}", "command-fragment-".repeat(16));
+        let started_detail = plugin_command_task_detail(&command_id);
+        let event = UiEvent::PluginCommandFinished {
+            root: PathBuf::from("workspace"),
+            generation: 4,
+            plugin_id: "example.plugin".to_owned(),
+            command_id,
+            result: Err("failed".to_owned()),
+        };
+        let label = async_task_event_label(&event).expect("plugin command event label");
+        let mut active = VecDeque::from([AsyncTaskActiveEntry {
+            id: 7,
+            name: "Plugin Command".to_owned(),
+            detail: started_detail,
+            started_at: Instant::now(),
+        }]);
+
+        assert_eq!(label.name, "Plugin Command");
+        assert_eq!(label.outcome, AsyncTaskOutcome::Failed);
+        let finished =
+            finish_matching_async_task(&mut active, label.name, &label.detail, Instant::now())
+                .expect("finished plugin command should match active task");
+        assert_eq!(finished.entry.id, 7);
+        assert!(active.is_empty());
     }
 
     #[test]

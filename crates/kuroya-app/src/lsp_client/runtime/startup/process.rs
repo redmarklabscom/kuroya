@@ -2,13 +2,16 @@ mod stdio;
 
 use super::StartedLspClient;
 use crate::lsp_runtime::{lsp_language_display_label, lsp_status_display_message};
-use crate::path_display::display_error_label_cow;
+use crate::path_display::sanitized_display_label_cow;
 use crate::ui_event_channel::Sender;
 use crate::{lsp_ui_events::LspUiEvent, ui_events::UiEvent};
 use kuroya_core::LspServerConfig;
 use std::path::Path;
 use stdio::take_lsp_stdio;
 use tokio::{io::BufReader, process::Command};
+
+const LSP_COMMAND_STATUS_MAX_CHARS: usize = 24;
+const LSP_UNAVAILABLE_DETAIL_MAX_CHARS: usize = 32;
 
 pub(super) fn prepare_lsp_process_io(
     config: &LspServerConfig,
@@ -26,7 +29,11 @@ pub(super) fn prepare_lsp_process_io(
                     language: config.language.clone(),
                     root: root.to_path_buf(),
                     generation,
-                    message: lsp_unavailable_status_message(&config.language, &error.to_string()),
+                    message: lsp_unavailable_status_message(
+                        &config.language,
+                        &config.command,
+                        &error.to_string(),
+                    ),
                 }),
             );
             return None;
@@ -54,12 +61,25 @@ fn lsp_process_command(config: &LspServerConfig, root: &Path) -> Command {
     command
 }
 
-fn lsp_unavailable_status_message(language: &str, detail: &str) -> String {
+fn lsp_unavailable_status_message(language: &str, command: &str, detail: &str) -> String {
     lsp_status_display_message(&format!(
-        "{} LSP unavailable: {}",
+        "{} LSP unavailable: failed to start {}: {}",
         lsp_language_display_label(language),
-        display_error_label_cow(detail)
+        lsp_command_display_label(command),
+        lsp_unavailable_detail_label(detail)
     ))
+}
+
+fn lsp_command_display_label(command: &str) -> std::borrow::Cow<'_, str> {
+    sanitized_display_label_cow(
+        command.trim(),
+        LSP_COMMAND_STATUS_MAX_CHARS,
+        "configured command",
+    )
+}
+
+fn lsp_unavailable_detail_label(detail: &str) -> std::borrow::Cow<'_, str> {
+    sanitized_display_label_cow(detail, LSP_UNAVAILABLE_DETAIL_MAX_CHARS, "unknown error")
 }
 
 #[cfg(test)]
@@ -80,6 +100,7 @@ mod tests {
             language: "test".to_owned(),
             command: "test-language-server".to_owned(),
             args: vec!["--stdio".to_owned()],
+            extensions: Vec::new(),
             root_markers: vec![],
         };
 
@@ -96,9 +117,11 @@ mod tests {
             "error-fragment-".repeat(24)
         );
 
-        let message = lsp_unavailable_status_message(&language, &error);
+        let command = "rust-analyzer\n--bad\u{2066}";
+        let message = lsp_unavailable_status_message(&language, command, &error);
 
         assert_display_safe(&message);
+        assert!(message.contains("failed to start"));
         assert!(message.contains("..."));
         assert!(message.chars().count() <= LSP_STATUS_MESSAGE_MAX_CHARS);
     }
@@ -111,6 +134,7 @@ mod tests {
             language: language.clone(),
             command: String::new(),
             args: Vec::new(),
+            extensions: Vec::new(),
             root_markers: Vec::new(),
         };
 
@@ -149,6 +173,7 @@ mod tests {
             language: "rust".to_owned(),
             command: String::new(),
             args: Vec::new(),
+            extensions: Vec::new(),
             root_markers: Vec::new(),
         };
         let status_tx = tx.clone();
@@ -173,7 +198,7 @@ mod tests {
                     if language == "rust"
                         && root == &PathBuf::from("workspace")
                         && *generation == 7
-                        && message.starts_with("rust LSP unavailable:")
+                        && message.starts_with("rust LSP unavailable: failed to start configured command:")
             ) {
                 delivered = true;
                 break;

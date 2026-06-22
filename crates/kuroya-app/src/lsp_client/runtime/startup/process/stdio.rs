@@ -37,7 +37,7 @@ fn send_lsp_stdio_unavailable_status(
             language: config.language.clone(),
             root: root.to_path_buf(),
             generation,
-            message: lsp_unavailable_status_message(&config.language, detail),
+            message: lsp_unavailable_status_message(&config.language, &config.command, detail),
         }),
     );
 }
@@ -62,6 +62,7 @@ mod tests {
             language: language.clone(),
             command: "test-language-server".to_owned(),
             args: Vec::new(),
+            extensions: Vec::new(),
             root_markers: Vec::new(),
         };
 
@@ -104,6 +105,7 @@ mod tests {
             language: "rust".to_owned(),
             command: "test-language-server".to_owned(),
             args: Vec::new(),
+            extensions: Vec::new(),
             root_markers: Vec::new(),
         };
         let status_tx = tx.clone();
@@ -134,7 +136,9 @@ mod tests {
                     if language == "rust"
                         && root == &PathBuf::from("workspace")
                         && *generation == 9
-                        && message.starts_with("rust LSP unavailable:")
+                        && message.starts_with(
+                            "rust LSP unavailable: failed to start test-language-server:"
+                        )
             ) {
                 delivered = true;
                 break;

@@ -221,16 +221,23 @@ fn assign_keybinding_chord_prepared(
     chord: String,
     chord_is_normalized: bool,
 ) -> Option<Command> {
-    let mut conflict = None;
+    if let Some(conflict) = bindings
+        .iter()
+        .find(|binding| {
+            binding.command != command
+                && keybinding_chord_matches_prepared(&binding.chord, &chord, chord_is_normalized)
+        })
+        .map(|binding| binding.command.clone())
+    {
+        return Some(conflict);
+    }
+
     let mut kept_command_binding = false;
     bindings.retain(|binding| {
         if binding.command == command {
             let keep = !kept_command_binding;
             kept_command_binding = true;
             keep
-        } else if keybinding_chord_matches_prepared(&binding.chord, &chord, chord_is_normalized) {
-            conflict.get_or_insert_with(|| binding.command.clone());
-            false
         } else {
             true
         }
@@ -244,7 +251,7 @@ fn assign_keybinding_chord_prepared(
     } else {
         bindings.push(KeyBinding { chord, command });
     }
-    conflict
+    None
 }
 
 fn keybinding_chord_matches_prepared(

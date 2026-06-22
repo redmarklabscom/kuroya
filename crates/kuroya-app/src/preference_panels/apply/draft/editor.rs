@@ -1,5 +1,6 @@
+use crate::editor_vim_key_events::sanitize_vim_settings_for_runtime;
 use kuroya_core::{
-    EditorSettings, GitInputValidationSubjectLength, clamp_diff_context_lines,
+    EditorSettings, GitInputValidationSubjectLength, LspServerConfig, clamp_diff_context_lines,
     clamp_diff_hide_unchanged_regions_minimum_line_count,
     clamp_diff_hide_unchanged_regions_reveal_line_count, clamp_diff_max_computation_time_ms,
     clamp_diff_max_file_size_mb, clamp_diff_render_side_by_side_inline_breakpoint,
@@ -14,18 +15,17 @@ use kuroya_core::{
     clamp_editor_overview_ruler_lanes, clamp_editor_padding,
     clamp_editor_reveal_horizontal_right_padding, clamp_editor_ruler_column,
     clamp_editor_scroll_beyond_last_column, clamp_editor_scroll_sensitivity,
-    clamp_editor_scrollbar_size, clamp_editor_selection_highlight_max_length,
-    clamp_editor_sticky_scroll_max_line_count, clamp_editor_stop_rendering_line_after,
-    clamp_editor_tab_index, clamp_editor_word_wrap_column, clamp_git_autofetch_period,
-    clamp_git_commit_short_hash_length, clamp_git_detect_submodules_limit,
-    clamp_git_detect_worktrees_limit, clamp_git_input_validation_length,
-    clamp_git_repository_scan_max_depth, clamp_git_similarity_threshold, clamp_git_status_limit,
-    clamp_hover_delay_ms, clamp_hover_hiding_delay_ms, clamp_inline_suggest_min_show_delay_ms,
-    clamp_occurrences_highlight_delay_ms, clamp_quick_suggestions_delay_ms,
-    clamp_scm_diff_decorations_gutter_width, clamp_scm_graph_page_size, clamp_scm_input_font_size,
-    clamp_scm_input_line_count, clamp_scm_repositories_visible, clamp_suggest_font_size,
-    clamp_suggest_line_height, normalize_editor_font_ligatures, normalize_editor_font_variations,
-    sanitize_editor_font_weight,
+    clamp_editor_scrollbar_size, clamp_editor_sticky_scroll_max_line_count,
+    clamp_editor_stop_rendering_line_after, clamp_editor_tab_index, clamp_editor_word_wrap_column,
+    clamp_git_autofetch_period, clamp_git_commit_short_hash_length,
+    clamp_git_detect_submodules_limit, clamp_git_detect_worktrees_limit,
+    clamp_git_input_validation_length, clamp_git_repository_scan_max_depth,
+    clamp_git_similarity_threshold, clamp_git_status_limit, clamp_hover_delay_ms,
+    clamp_hover_hiding_delay_ms, clamp_inline_suggest_min_show_delay_ms,
+    clamp_quick_suggestions_delay_ms, clamp_scm_diff_decorations_gutter_width,
+    clamp_scm_graph_page_size, clamp_scm_input_font_size, clamp_scm_input_line_count,
+    clamp_scm_repositories_visible, clamp_suggest_font_size, clamp_suggest_line_height,
+    normalize_editor_font_ligatures, normalize_editor_font_variations, sanitize_editor_font_weight,
 };
 use std::collections::BTreeMap;
 
@@ -36,8 +36,12 @@ const MIN_SETTINGS_PANEL_UI_FONT_SIZE: f32 = 10.0;
 const MAX_SETTINGS_PANEL_UI_FONT_SIZE: f32 = 24.0;
 const DEFAULT_SETTINGS_PANEL_UI_FONT_SIZE: f32 = 13.0;
 const MAX_SETTINGS_TEXT_CHARS: usize = 8_192;
+const MAX_CUSTOM_THEME_PATHS: usize = 256;
+const MAX_CUSTOM_THEME_PATH_CHARS: usize = 4096;
 
 pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: &EditorSettings) {
+    let current_theme = settings.theme.clone();
+    let current_active_custom_theme_path = settings.active_custom_theme_path.clone();
     settings.font_size = clamp_finite_f32(
         draft.font_size,
         MIN_SETTINGS_PANEL_FONT_SIZE,
@@ -55,6 +59,14 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
     settings.font_weight = sanitize_editor_font_weight(&draft.font_weight);
     settings.font_ligatures = normalize_editor_font_ligatures(&draft.font_ligatures);
     settings.font_variations = normalize_editor_font_variations(&draft.font_variations);
+    settings.theme = draft.theme.clone();
+    settings.active_custom_theme_path = draft.active_custom_theme_path.clone().or_else(|| {
+        if draft.theme == current_theme {
+            current_active_custom_theme_path
+        } else {
+            None
+        }
+    });
     settings.letter_spacing = clamp_editor_letter_spacing(draft.letter_spacing);
     settings.automatic_layout = draft.automatic_layout;
     settings.disable_layer_hinting = draft.disable_layer_hinting;
@@ -105,6 +117,9 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
     settings.rename_on_type = draft.rename_on_type;
     settings.tab_focus_mode = draft.tab_focus_mode;
     settings.vim_keybindings = draft.vim_keybindings;
+    settings.vim = draft.vim.clone();
+    settings.vim.sanitize();
+    sanitize_vim_settings_for_runtime(&mut settings.vim);
     settings.quick_suggestions = draft.quick_suggestions;
     settings.quick_suggestions_delay_ms =
         clamp_quick_suggestions_delay_ms(draft.quick_suggestions_delay_ms);
@@ -198,9 +213,6 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
         draft.inline_suggest_experimental_empty_response_information;
     settings.inline_completions_accessibility_verbose =
         draft.inline_completions_accessibility_verbose;
-    settings.occurrences_highlight = draft.occurrences_highlight;
-    settings.occurrences_highlight_delay_ms =
-        clamp_occurrences_highlight_delay_ms(draft.occurrences_highlight_delay_ms);
     settings.lightbulb = draft.lightbulb;
     settings.render_validation_decorations = draft.render_validation_decorations;
     settings.document_highlights_enabled = draft.document_highlights_enabled;
@@ -239,6 +251,7 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
     settings.parameter_hints_enabled = draft.parameter_hints_enabled;
     settings.parameter_hints_on_trigger_characters = draft.parameter_hints_on_trigger_characters;
     settings.parameter_hints_cycle = draft.parameter_hints_cycle;
+    settings.lsp_servers = normalized_lsp_server_configs(&draft.lsp_servers);
     settings.comments_insert_space = draft.comments_insert_space;
     settings.comments_ignore_empty_lines = draft.comments_ignore_empty_lines;
     settings.format_on_save = draft.format_on_save;
@@ -362,10 +375,6 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
         raw_non_empty_bool_map(&draft.unicode_highlight_allowed_locales);
     settings.render_line_highlight = draft.render_line_highlight;
     settings.render_line_highlight_only_when_focus = draft.render_line_highlight_only_when_focus;
-    settings.selection_highlight = draft.selection_highlight;
-    settings.selection_highlight_max_length =
-        clamp_editor_selection_highlight_max_length(draft.selection_highlight_max_length);
-    settings.selection_highlight_multiline = draft.selection_highlight_multiline;
     settings.smart_select_select_leading_and_trailing_whitespace =
         draft.smart_select_select_leading_and_trailing_whitespace;
     settings.smart_select_select_subwords = draft.smart_select_select_subwords;
@@ -606,6 +615,15 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
     settings.cursor_surrounding_lines =
         clamp_editor_cursor_surrounding_lines(draft.cursor_surrounding_lines);
     settings.cursor_surrounding_lines_style = draft.cursor_surrounding_lines_style;
+    settings.custom_theme_paths = normalized_custom_theme_paths(&draft.custom_theme_paths);
+    if let Some(active_path) = settings.active_custom_theme_path.as_deref()
+        && !settings
+            .custom_theme_paths
+            .iter()
+            .any(|path| path == active_path)
+    {
+        settings.active_custom_theme_path = None;
+    }
 }
 
 fn normalized_git_checkout_types(
@@ -621,11 +639,87 @@ fn normalized_git_checkout_types(
     .collect()
 }
 
+fn normalized_lsp_server_configs(servers: &[LspServerConfig]) -> Vec<LspServerConfig> {
+    let mut normalized = Vec::new();
+    for server in servers {
+        let mut language = normalized_trimmed_setting_text(&server.language);
+        language.make_ascii_lowercase();
+        let command = normalized_trimmed_setting_text(&server.command);
+        if language.is_empty() || command.is_empty() {
+            continue;
+        }
+
+        let config = LspServerConfig {
+            language,
+            command,
+            args: normalized_trimmed_non_empty_string_list(&server.args, false),
+            extensions: normalized_lsp_extensions(&server.extensions),
+            root_markers: normalized_trimmed_non_empty_string_list(&server.root_markers, true),
+        };
+
+        if let Some(index) = normalized
+            .iter()
+            .position(|existing: &LspServerConfig| existing.language == config.language)
+        {
+            normalized[index] = config;
+        } else {
+            normalized.push(config);
+        }
+    }
+    normalized
+}
+
+fn normalized_lsp_extensions(values: &[String]) -> Vec<String> {
+    let normalized = normalized_trimmed_non_empty_string_list(values, true);
+    let mut output = Vec::with_capacity(normalized.len());
+    for extension in normalized {
+        let extension = extension.trim_start_matches('.').trim().to_owned();
+        if extension.is_empty() || output.contains(&extension) {
+            continue;
+        }
+        output.push(extension);
+    }
+    output
+}
+
+fn normalized_custom_theme_paths(values: &[String]) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(values.len().min(MAX_CUSTOM_THEME_PATHS));
+    for value in values.iter().take(MAX_CUSTOM_THEME_PATHS) {
+        let item = normalized_setting_text(value);
+        let item = item
+            .chars()
+            .take(MAX_CUSTOM_THEME_PATH_CHARS)
+            .collect::<String>()
+            .trim()
+            .to_owned();
+        if item.is_empty() || normalized.iter().any(|existing| existing == &item) {
+            continue;
+        }
+        normalized.push(item);
+    }
+    normalized
+}
+
 fn raw_non_empty_string_list(values: &[String]) -> Vec<String> {
     values
         .iter()
         .filter_map(|value| normalized_non_empty_setting_text(value))
         .collect()
+}
+
+fn normalized_trimmed_non_empty_string_list(values: &[String], dedupe: bool) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let item = normalized_trimmed_setting_text(value);
+        if item.is_empty() {
+            continue;
+        }
+        if dedupe && normalized.iter().any(|existing| existing == &item) {
+            continue;
+        }
+        normalized.push(item);
+    }
+    normalized
 }
 
 fn raw_non_empty_string_map(values: &BTreeMap<String, String>) -> BTreeMap<String, String> {

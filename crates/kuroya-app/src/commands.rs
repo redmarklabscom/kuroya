@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 
 use crate::path_display::{display_path_label_cow, sanitized_display_label_cow};
-#[cfg(test)]
 use kuroya_core::keymap::KeyBinding;
 use kuroya_core::{Command, WorkspaceTaskKind};
 
@@ -10,7 +9,6 @@ pub(crate) use crate::command_catalog::command_catalog;
 
 const PLUGIN_COMMAND_LABEL_FRAGMENT_MAX_CHARS: usize = 96;
 
-#[cfg(test)]
 pub(crate) fn keybinding_chord_for_command(
     bindings: &[KeyBinding],
     command: &Command,
@@ -58,6 +56,7 @@ pub(crate) fn command_label(command: &Command) -> String {
         Command::ToggleReadOnly => "Toggle Read Only".to_owned(),
         Command::ToggleMinimap => "Toggle Minimap".to_owned(),
         Command::ToggleStickyScroll => "Toggle Sticky Scroll".to_owned(),
+        Command::ToggleVimMode => "Toggle Vim Mode".to_owned(),
         Command::ReloadSettings => "Reload Settings".to_owned(),
         Command::CheckForUpdates => "Check for Updates".to_owned(),
         Command::ToggleSettingsPanel => "Settings".to_owned(),

@@ -69,17 +69,13 @@ pub(crate) fn render_lsp_markdown_blocks(
                 }
             }
             HoverMarkdownBlock::Quote(lines) => {
+                let weak_text_color = ui.visuals().weak_text_color();
                 egui::Frame::new()
-                    .fill(Color32::from_rgba_unmultiplied(126, 136, 150, 24))
+                    .fill(faint_markdown_fill(weak_text_color, 24))
                     .inner_margin(egui::Margin::symmetric(8, 6))
                     .show(ui, |ui| {
                         for line in lines {
-                            render_inline_markdown_label(
-                                ui,
-                                line,
-                                size,
-                                Color32::from_rgb(176, 185, 196),
-                            );
+                            render_inline_markdown_label(ui, line, size, weak_text_color);
                         }
                     });
             }
@@ -88,14 +84,14 @@ pub(crate) fn render_lsp_markdown_blocks(
                 let text = bounded_code_block_text(text);
                 if !text.is_empty() {
                     egui::Frame::new()
-                        .fill(Color32::from_rgb(30, 34, 42))
+                        .fill(ui.visuals().code_bg_color)
                         .inner_margin(egui::Margin::symmetric(8, 6))
                         .show(ui, |ui| {
                             if let Some(language) = language {
                                 ui.label(
                                     RichText::new(language)
                                         .small()
-                                        .color(Color32::from_rgb(126, 136, 150)),
+                                        .color(ui.visuals().weak_text_color()),
                                 );
                                 ui.add_space(4.0);
                             }
@@ -106,16 +102,15 @@ pub(crate) fn render_lsp_markdown_blocks(
                     if !text.is_empty() {
                         ui.add_space(8.0);
                     }
-                    render_inline_markdown_label(
-                        ui,
-                        notice,
-                        size,
-                        Color32::from_rgb(176, 185, 196),
-                    );
+                    render_inline_markdown_label(ui, notice, size, ui.visuals().weak_text_color());
                 }
             }
         }
     }
+}
+
+fn faint_markdown_fill(color: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
 fn sized_text(text: RichText, size: LspMarkdownTextSize) -> RichText {
@@ -224,12 +219,8 @@ impl MarkdownInlineJobBuilder {
             job,
             text_format: markdown_text_format_with_size(font_size, color, FontFamily::Proportional),
             code_format: TextFormat {
-                background: Color32::from_rgba_unmultiplied(126, 136, 150, 36),
-                ..markdown_text_format_with_size(
-                    font_size,
-                    Color32::from_rgb(222, 226, 233),
-                    FontFamily::Monospace,
-                )
+                background: faint_markdown_fill(color, 36),
+                ..markdown_text_format_with_size(font_size, color, FontFamily::Monospace)
             },
         }
     }

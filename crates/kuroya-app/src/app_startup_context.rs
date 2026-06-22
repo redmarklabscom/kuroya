@@ -1,19 +1,21 @@
 use crate::{
     devtools_startup::{StartupProfiler, StartupTimingEntry},
+    editor_vim_key_events::sanitize_vim_settings_for_runtime,
     fonts::{apply_typography, install_fonts},
     fs_watcher::FileWatcher,
     persistence::{AppState, PersistedSession},
     preferences::load_workspace_settings,
     settings_form::optional_setting_path_to_input,
     terminal::TerminalPane,
-    theme::{apply_theme, selected_theme_index},
+    theme::apply_theme,
+    theme_picker_panel::selected_theme_picker_index_for_settings,
     ui_event_channel::{Receiver, Sender, ui_event_channel},
     ui_events::UiEvent,
     workspace_state::paths_match_lexically,
     workspace_trust::workspace_is_trusted,
 };
 use anyhow::Context as _;
-use kuroya_core::{EditorSettings, Workspace, window_zoom_factor};
+use kuroya_core::{EditorSettings, PluginThemeRegistry, Workspace, window_zoom_factor};
 use std::{
     ffi::OsString,
     fs,
@@ -59,8 +61,8 @@ impl AppStartupContext {
         let mut settings = load_workspace_settings(&workspace.root, workspace_trusted)
             .map(|loaded| loaded.settings)
             .unwrap_or_default();
-        if let Some(vim_keybindings) = app_state.vim_keybindings {
-            settings.vim_keybindings = vim_keybindings;
+        if !workspace_trusted {
+            apply_restricted_app_state_vim_settings(&mut settings, &app_state);
         }
         startup_profiler.record("Load settings");
 
@@ -71,7 +73,11 @@ impl AppStartupContext {
             .set_zoom_factor(window_zoom_factor(settings.window_zoom_level));
         startup_profiler.record("Configure UI");
 
-        let theme_picker_selected = selected_theme_index(&settings.theme);
+        let theme_picker_selected = selected_theme_picker_index_for_settings(
+            &workspace.root,
+            &settings,
+            &PluginThemeRegistry::default(),
+        );
         let settings_panel_draft = settings.clone();
         let settings_editor_font_path = optional_setting_path_to_input(&settings.editor_font_path);
         let settings_ui_font_path = optional_setting_path_to_input(&settings.ui_font_path);
@@ -152,6 +158,16 @@ impl AppStartupContext {
     }
 }
 
+fn apply_restricted_app_state_vim_settings(settings: &mut EditorSettings, app_state: &AppState) {
+    if let Some(vim_keybindings) = app_state.vim_keybindings {
+        settings.vim_keybindings = vim_keybindings;
+    }
+    if let Some(vim) = &app_state.vim {
+        settings.vim = vim.clone();
+        sanitize_vim_settings_for_runtime(&mut settings.vim);
+    }
+}
+
 fn create_runtime() -> anyhow::Result<Runtime> {
     Runtime::new().context("create tokio runtime")
 }
@@ -195,9 +211,12 @@ pub(crate) fn is_empty_startup_workspace_root(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        create_runtime, empty_startup_workspace_root, home_dir_from_env_values,
-        is_empty_startup_workspace_root, terminal_root_for_workspace_with_home,
+        apply_restricted_app_state_vim_settings, create_runtime, empty_startup_workspace_root,
+        home_dir_from_env_values, is_empty_startup_workspace_root,
+        terminal_root_for_workspace_with_home,
     };
+    use crate::persistence::AppState;
+    use kuroya_core::{EditorSettings, EditorVimKeyOverride, EditorVimSettings};
     use std::{ffi::OsString, path::PathBuf};
 
     #[test]
@@ -249,6 +268,46 @@ mod tests {
         assert_eq!(
             terminal_root_for_workspace_with_home(PathBuf::from("project").as_path(), None),
             PathBuf::from("project")
+        );
+    }
+
+    #[test]
+    fn restricted_startup_restores_vim_keybindings_and_config_from_app_state() {
+        let mut settings = EditorSettings::default();
+        let app_state_vim = EditorVimSettings {
+            disabled_bindings: vec!["Q".to_owned(), "<Nope>".to_owned()],
+            key_overrides: vec![
+                EditorVimKeyOverride {
+                    before: "<Home>".to_owned(),
+                    after: "0".to_owned(),
+                    command: None,
+                },
+                EditorVimKeyOverride {
+                    before: "L".to_owned(),
+                    after: "<Left>".to_owned(),
+                    command: None,
+                },
+            ],
+        };
+        let app_state = AppState {
+            vim_keybindings: Some(true),
+            vim: Some(app_state_vim),
+            ..AppState::default()
+        };
+
+        apply_restricted_app_state_vim_settings(&mut settings, &app_state);
+
+        assert!(settings.vim_keybindings);
+        assert_eq!(
+            settings.vim,
+            EditorVimSettings {
+                disabled_bindings: vec!["Q".to_owned()],
+                key_overrides: vec![EditorVimKeyOverride {
+                    before: "<Home>".to_owned(),
+                    after: "0".to_owned(),
+                    command: None,
+                }],
+            }
         );
     }
 }

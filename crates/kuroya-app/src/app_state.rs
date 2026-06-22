@@ -11,7 +11,6 @@ use crate::{
     devtools_repaint_diagnostics::RepaintDiagnosticSample,
     devtools_startup::StartupTimingEntry,
     editor_bracket_overlay_cache::EditorBracketOverlayCache,
-    editor_match_highlight_cache::EditorMatchHighlightCache,
     editor_vim_key_events::{
         EditorVimCharFind, EditorVimLastChange, EditorVimMode, EditorVimPendingKey,
         EditorVimRegister,
@@ -66,8 +65,8 @@ use kuroya_core::{
     LspDocumentHighlight, LspDocumentSymbol, LspFoldingRange, LspInlayHint, LspReference,
     LspSemanticToken, LspTextEdit, LspTypeHierarchyItem, LspWorkspaceSymbol, PluginActivationState,
     PluginCommandRegistry, PluginDescriptor, PluginDiscoveryError, PluginLanguageRegistry,
-    PluginRuntimeRegistry, PluginSyntaxRegistry, PluginThemeRegistry, ProjectIndex,
-    ProjectSearchIndex, SearchResult, TextBuffer, Workspace, WorkspaceTask, WorkspaceTaskKind,
+    PluginRuntimeRegistry, PluginSyntaxRegistry, PluginThemeRegistry, ProjectIndex, SearchResult,
+    TextBuffer, Workspace, WorkspaceTask, WorkspaceTaskKind, keymap::KeyBinding,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -99,19 +98,30 @@ pub(crate) struct QueuedFileReload {
     pub(crate) force_dirty: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct KeybindingEscapeCancel {
+    pub(crate) command: Command,
+    pub(crate) bindings_before_escape: Vec<KeyBinding>,
+    pub(crate) deadline: Instant,
+    pub(crate) saved_escape_binding: bool,
+}
+
 pub(crate) struct KuroyaApp {
     pub(crate) runtime: Runtime,
     pub(crate) tx: Sender<UiEvent>,
     pub(crate) rx: Receiver<UiEvent>,
+    #[cfg(test)]
+    pub(crate) app_state_path_override: Option<PathBuf>,
     pub(crate) workspace: Workspace,
     pub(crate) workspace_placeholder: bool,
     pub(crate) workspace_event_generation: u64,
     pub(crate) index: ProjectIndex,
-    pub(crate) project_search_index: Arc<ProjectSearchIndex>,
     pub(crate) project_search_index_generation: u64,
     pub(crate) command_bus: CommandBus,
     pub(crate) shortcut_dispatch_cache: ShortcutDispatchCache,
     pub(crate) settings: EditorSettings,
+    pub(crate) app_state_vim_keybindings: bool,
+    pub(crate) app_state_vim: kuroya_core::EditorVimSettings,
     pub(crate) highlighter: SyntaxHighlighter,
     pub(crate) syntax_tree_cache: TreeSitterSyntaxCache,
     pub(crate) matcher: SkimMatcherV2,
@@ -122,7 +132,6 @@ pub(crate) struct KuroyaApp {
     pub(crate) diff_cache_pending: HashMap<DiffCacheRequestKey, Instant>,
     pub(crate) merge_conflict_cache: HashMap<BufferId, MergeConflictCacheEntry>,
     pub(crate) editor_bracket_overlay_cache: EditorBracketOverlayCache,
-    pub(crate) editor_match_highlight_cache: EditorMatchHighlightCache,
     pub(crate) minimap_line_length_cache: MinimapLineLengthCache,
     pub(crate) minimap_section_header_cache: MinimapSectionHeaderCache,
     pub(crate) line_render_protection_cache: HashMap<BufferId, LineRenderProtectionCacheEntry>,
@@ -136,6 +145,7 @@ pub(crate) struct KuroyaApp {
     pub(crate) lossy_decoded_buffers: HashSet<BufferId>,
     pub(crate) binary_preview_buffers: HashSet<BufferId>,
     pub(crate) image_preview_buffers: HashMap<BufferId, ImagePreviewState>,
+    pub(crate) dashboard_logo_texture: Option<eframe::egui::TextureHandle>,
     pub(crate) manual_read_only_buffers: HashSet<BufferId>,
     pub(crate) explorer_expanded: HashSet<PathBuf>,
     pub(crate) explorer_revealed_path: Option<PathBuf>,
@@ -201,6 +211,7 @@ pub(crate) struct KuroyaApp {
     pub(crate) keybindings_query: String,
     pub(crate) keybindings_selected: usize,
     pub(crate) keybinding_capture_command: Option<Command>,
+    pub(crate) keybinding_escape_cancel: Option<KeybindingEscapeCancel>,
     pub(crate) dirty_close_buffer: Option<BufferId>,
     pub(crate) dirty_reload_buffer: Option<BufferId>,
     pub(crate) save_conflict_buffer: Option<BufferId>,
@@ -510,7 +521,6 @@ pub(crate) struct KuroyaApp {
     pub(crate) editor_vim_last_char_find: Option<EditorVimCharFind>,
     pub(crate) editor_vim_unnamed_register: Option<EditorVimRegister>,
     pub(crate) editor_vim_last_change: Option<EditorVimLastChange>,
-    pub(crate) editor_defer_match_highlights_for_buffer: Option<BufferId>,
     pub(crate) pending_language_sync: HashMap<BufferId, Instant>,
     pub(crate) session_save_in_flight: Option<PathBuf>,
     pub(crate) queued_session_saves: HashMap<PathBuf, SessionSaveSnapshot>,
