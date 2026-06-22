@@ -1,7 +1,7 @@
 mod state;
 
 use super::ReloadedFileEvent;
-use crate::image_preview::ImagePreviewState;
+use crate::image_preview::{ImagePreviewState, enforce_image_preview_retained_byte_cap};
 use crate::{
     KuroyaApp, file_reload_runtime::file_paths_match_lexically,
     file_runtime::loaded_buffer_path_matches_request, path_display::display_path_label_cow,
@@ -27,6 +27,8 @@ impl KuroyaApp {
             if let Some(preview) = event.image_preview {
                 self.image_preview_buffers
                     .insert(event.id, ImagePreviewState::from_loaded(preview));
+                let keep_ids = self.active.into_iter().chain(std::iter::once(event.id));
+                enforce_image_preview_retained_byte_cap(&mut self.image_preview_buffers, keep_ids);
             } else {
                 self.image_preview_buffers.remove(&event.id);
             }

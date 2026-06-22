@@ -41,7 +41,7 @@ pub(super) fn terminal_path_link_at_text_position_with_home(
     workspace_root: &Path,
     home_dir: Option<&Path>,
 ) -> Option<TerminalPathLink> {
-    let mut home_dir = TerminalHomeDir::Known(home_dir);
+    let mut home_dir = TerminalHomeDir::Known(home_dir.map(Path::to_path_buf));
     terminal_path_link_at_text_position_with_home_dir(text, column, workspace_root, &mut home_dir)
 }
 
@@ -49,7 +49,7 @@ fn terminal_path_link_at_text_position_with_home_dir(
     text: &str,
     column: usize,
     workspace_root: &Path,
-    home_dir: &mut TerminalHomeDir<'_>,
+    home_dir: &mut TerminalHomeDir,
 ) -> Option<TerminalPathLink> {
     let token = terminal_link_token_at_column(text, column)?;
     let suffix = terminal_link_suffix_after_token(text, token.suffix_start_byte);
@@ -62,16 +62,17 @@ fn terminal_path_link_at_text_position_with_home_dir(
     )
 }
 
-enum TerminalHomeDir<'a> {
-    #[allow(dead_code)]
-    Known(Option<&'a Path>),
+enum TerminalHomeDir {
+    #[cfg(test)]
+    Known(Option<PathBuf>),
     Lazy(Option<PathBuf>),
 }
 
-impl TerminalHomeDir<'_> {
+impl TerminalHomeDir {
     fn get(&mut self) -> Option<&Path> {
         match self {
-            Self::Known(home_dir) => *home_dir,
+            #[cfg(test)]
+            Self::Known(home_dir) => home_dir.as_deref(),
             Self::Lazy(home_dir) => {
                 if home_dir.is_none() {
                     *home_dir = terminal_home_dir();
@@ -460,7 +461,7 @@ fn terminal_path_link_from_token(
     suffix: &str,
     unescape_escaped_whitespace: bool,
     workspace_root: &Path,
-    home_dir: &mut TerminalHomeDir<'_>,
+    home_dir: &mut TerminalHomeDir,
 ) -> Option<TerminalPathLink> {
     if terminal_path_text_has_unsafe_display_chars(token) {
         return None;
@@ -514,7 +515,7 @@ fn terminal_path_from_text(
     path_text: &str,
     unescape_escaped_whitespace: bool,
     workspace_root: &Path,
-    home_dir: &mut TerminalHomeDir<'_>,
+    home_dir: &mut TerminalHomeDir,
 ) -> Option<PathBuf> {
     if terminal_path_text_has_unsafe_display_chars(path_text) {
         return None;

@@ -1,11 +1,11 @@
 use crate::{
     KuroyaApp,
+    editor_vim_key_events::sanitize_vim_settings_for_runtime,
     path_display::{
         DISPLAY_PATH_LABEL_MAX_CHARS, display_error_label_cow, display_path_label_cow,
         sanitized_display_label_cow,
     },
     settings_form::optional_setting_path_to_input,
-    theme::selected_theme_index_with_plugins,
     workspace_state::settings_path,
 };
 use kuroya_core::{EditorSettings, EditorSettingsLoad};
@@ -22,7 +22,12 @@ pub(crate) fn load_workspace_settings(
         });
     }
 
-    EditorSettings::load_or_create_with_recovery(&settings_path(root))
+    let path = settings_path(root);
+    let mut loaded = EditorSettings::load_or_create_with_recovery(&path)?;
+    if sanitize_vim_settings_for_runtime(&mut loaded.settings.vim) {
+        let _ = loaded.settings.save(&path);
+    }
+    Ok(loaded)
 }
 
 impl KuroyaApp {
@@ -32,7 +37,9 @@ impl KuroyaApp {
             Ok(loaded) => {
                 let workspace_trusted = self.workspace_trusted;
                 let mut settings = loaded.settings;
-                settings.vim_keybindings = self.settings.vim_keybindings;
+                if !workspace_trusted {
+                    preserve_current_restricted_settings(&mut settings, &self.settings);
+                }
                 let previous_settings = std::mem::replace(&mut self.settings, settings);
                 for buffer in &mut self.buffers {
                     buffer.set_word_separators(self.settings.word_separators.clone());
@@ -122,18 +129,30 @@ impl KuroyaApp {
                 self.terminal
                     .set_mouse_wheel_zoom(self.settings.terminal_mouse_wheel_zoom);
                 self.sync_settings_panel_inputs();
-                self.theme_picker_selected =
-                    selected_theme_index_with_plugins(&self.settings.theme, &self.plugin_themes);
+                self.theme_picker_selected = self.selected_theme_picker_index();
                 self.status = if workspace_trusted {
                     settings_reload_status(&path, loaded.quarantined_path.as_deref())
                 } else {
                     restricted_workspace_settings_status()
                 };
+                if workspace_trusted {
+                    self.sync_app_state_vim_settings_after_trusted_reload();
+                }
                 self.theme_dirty = true;
                 self.fonts_dirty = true;
+                if previous_settings.vim_keybindings != self.settings.vim_keybindings
+                    || previous_settings.vim != self.settings.vim
+                {
+                    self.editor_vim_mode = crate::editor_vim_key_events::EditorVimMode::Normal;
+                    self.editor_vim_pending_key = None;
+                    self.editor_vim_last_char_find = None;
+                    self.editor_vim_unnamed_register = None;
+                    self.editor_vim_last_change = None;
+                }
                 if previous_settings.read_only != self.settings.read_only {
                     self.sync_global_read_only_buffers();
                 }
+                self.sync_lsp_server_settings_after_reload(&previous_settings);
                 let git_repository_scan_settings_changed = previous_settings
                     .git_auto_repository_detection
                     != self.settings.git_auto_repository_detection
@@ -206,6 +225,37 @@ impl KuroyaApp {
         self.spawn_open_file(path.clone());
         self.status = settings_opening_status(&path);
     }
+
+    fn sync_app_state_vim_settings_after_trusted_reload(&mut self) {
+        if self.app_state_vim_keybindings == self.settings.vim_keybindings
+            && self.app_state_vim == self.settings.vim
+        {
+            return;
+        }
+
+        self.app_state_vim_keybindings = self.settings.vim_keybindings;
+        self.app_state_vim = self.settings.vim.clone();
+        if let Err(error) = self.save_app_state() {
+            push_app_state_reload_save_failed_status(&mut self.status, error);
+        }
+    }
+}
+
+fn preserve_current_restricted_settings(settings: &mut EditorSettings, current: &EditorSettings) {
+    settings.theme = current.theme.clone();
+    settings.custom_theme_paths = current.custom_theme_paths.clone();
+    settings.active_custom_theme_path = current.active_custom_theme_path.clone();
+    settings.editor_font_path = current.editor_font_path.clone();
+    settings.ui_font_path = current.ui_font_path.clone();
+    settings.vim_keybindings = current.vim_keybindings;
+    settings.vim = current.vim.clone();
+}
+
+fn push_app_state_reload_save_failed_status(status: &mut String, error: impl Display) {
+    let error = error.to_string();
+    let error = display_error_label_cow(&error);
+    status.push_str("; app preference save failed: ");
+    status.push_str(error.as_ref());
 }
 
 fn restricted_workspace_settings_status() -> String {
@@ -277,11 +327,15 @@ mod tests {
     };
     use crate::{
         app_startup_context::AppStartupContext,
+        lsp_client::LspClientHandle,
         path_display::{DISPLAY_ERROR_LABEL_MAX_CHARS, DISPLAY_PATH_LABEL_MAX_CHARS},
         terminal::TerminalPane,
         workspace_state::settings_path,
     };
-    use kuroya_core::{EditorSettings, TextBuffer, Workspace};
+    use kuroya_core::{
+        EditorSettings, EditorVimKeyOverride, EditorVimSettings, TextBuffer, ThemeSettings,
+        Workspace,
+    };
     use std::{
         borrow::Cow,
         fs,
@@ -423,8 +477,124 @@ mod tests {
     }
 
     #[test]
-    fn reload_settings_preserves_app_vim_keybindings() {
-        let root = temp_root("preserve-vim-keybindings");
+    fn reload_settings_applies_workspace_vim_keybindings() {
+        let root = temp_root("apply-vim-keybindings");
+        let settings = settings_path(&root);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(
+            &settings,
+            "vim_keybindings = false\n\
+             word_separators = \".\"\n\
+             [vim]\n\
+             disabled_bindings = [\"<C-n>\"]\n\
+             [[vim.key_overrides]]\n\
+             before = \"<Home>\"\n\
+             after = \"<C-r>\"\n\
+             [[vim.key_overrides]]\n\
+             before = \"L\"\n\
+             after = \"<Left>\"\n",
+        )
+        .unwrap();
+
+        let mut app = app_for_test(root.clone());
+        app.settings.vim_keybindings = true;
+        app.editor_vim_mode = crate::editor_vim_key_events::EditorVimMode::Insert;
+
+        app.reload_settings();
+
+        assert!(!app.settings.vim_keybindings);
+        assert_eq!(app.settings.vim.disabled_bindings, ["<C-n>"]);
+        assert_eq!(
+            app.settings.vim.key_overrides,
+            [EditorVimKeyOverride {
+                before: "<Home>".to_owned(),
+                after: "<C-r>".to_owned(),
+                command: None,
+            }]
+        );
+        assert_eq!(
+            app.editor_vim_mode,
+            crate::editor_vim_key_events::EditorVimMode::Normal
+        );
+        assert_eq!(app.settings.word_separators, ".");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn trusted_reload_updates_app_state_vim_fallback() {
+        let root = temp_root("reload-vim-keeps-app-state-fallback");
+        let settings = settings_path(&root);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(
+            &settings,
+            "vim_keybindings = false\n\
+             [vim]\n\
+             disabled_bindings = [\"<C-n>\"]\n",
+        )
+        .unwrap();
+
+        let mut app = app_for_test(root.clone());
+        app.app_state_vim_keybindings = true;
+        app.app_state_vim = EditorVimSettings {
+            disabled_bindings: vec!["Q".to_owned()],
+            key_overrides: Vec::new(),
+        };
+
+        app.reload_settings();
+
+        assert!(!app.settings.vim_keybindings);
+        assert_eq!(app.settings.vim.disabled_bindings, ["<C-n>"]);
+        assert!(!app.app_state_vim_keybindings);
+        assert_eq!(app.app_state_vim.disabled_bindings, ["<C-n>"]);
+        let app_state: crate::persistence::AppState =
+            serde_json::from_str(&fs::read_to_string(root.join("app-state.json")).unwrap())
+                .unwrap();
+        assert_eq!(app_state.vim_keybindings, Some(false));
+        assert_eq!(app_state.vim, Some(app.settings.vim.clone()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_workspace_settings_persists_runtime_sanitized_vim_settings() {
+        let root = temp_root("load-vim-persists-runtime-sanitize");
+        let settings = settings_path(&root);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(
+            &settings,
+            "vim_keybindings = true\n\
+             [vim]\n\
+             disabled_bindings = [\"<C-n>\", \"<Missing>\"]\n\
+             [[vim.key_overrides]]\n\
+             before = \"Q\"\n\
+             after = \"<Esc>\"\n\
+             [[vim.key_overrides]]\n\
+             before = \"Z\"\n\
+             after = \"<Missing>\"\n",
+        )
+        .unwrap();
+
+        let loaded = load_workspace_settings(&root, true).unwrap();
+
+        assert_eq!(loaded.settings.vim.disabled_bindings, ["<C-n>"]);
+        assert_eq!(
+            loaded.settings.vim.key_overrides,
+            [EditorVimKeyOverride {
+                before: "Q".to_owned(),
+                after: "<Esc>".to_owned(),
+                command: None,
+            }]
+        );
+        let saved = fs::read_to_string(settings).unwrap();
+        assert!(saved.contains("<C-n>"));
+        assert!(saved.contains("before = \"Q\""));
+        assert!(!saved.contains("<Missing>"));
+        assert!(!saved.contains("before = \"Z\""));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reload_settings_preserves_current_vim_keybindings_for_untrusted_workspace() {
+        let root = temp_root("untrusted-preserve-vim-keybindings");
         let settings = settings_path(&root);
         fs::create_dir_all(settings.parent().unwrap()).unwrap();
         fs::write(
@@ -433,13 +603,32 @@ mod tests {
         )
         .unwrap();
 
-        let mut app = app_for_test(root.clone());
+        let mut app = app_for_test_with_trust(root.clone(), false);
         app.settings.vim_keybindings = true;
+        app.settings.vim.disabled_bindings = vec!["Q".to_owned(), "<C-n>".to_owned()];
+        app.settings.vim.key_overrides = vec![EditorVimKeyOverride {
+            before: "<Home>".to_owned(),
+            after: "<C-r>".to_owned(),
+            command: None,
+        }];
 
         app.reload_settings();
 
         assert!(app.settings.vim_keybindings);
-        assert_eq!(app.settings.word_separators, ".");
+        assert_eq!(app.settings.vim.disabled_bindings, ["Q", "<C-n>"]);
+        assert_eq!(
+            app.settings.vim.key_overrides,
+            [EditorVimKeyOverride {
+                before: "<Home>".to_owned(),
+                after: "<C-r>".to_owned(),
+                command: None,
+            }]
+        );
+        assert_eq!(
+            app.settings.word_separators,
+            EditorSettings::default().word_separators
+        );
+        assert_eq!(app.status, restricted_workspace_settings_status());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -474,6 +663,183 @@ mod tests {
             EditorSettings::default().word_separators
         );
         assert_eq!(app.status, restricted_workspace_settings_status());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reload_settings_preserves_current_restricted_settings_for_untrusted_workspace() {
+        let root = temp_root("untrusted-reload-preserves-restricted-settings");
+        let settings = settings_path(&root);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(&settings, "word_separators = \".\"\n").unwrap();
+
+        let mut app = app_for_test_with_trust(root.clone(), false);
+        let current_theme = ThemeSettings {
+            name: "Session Light".to_owned(),
+            background: [248, 249, 250],
+            panel: [255, 255, 255],
+            panel_alt: [238, 241, 245],
+            text: [32, 36, 42],
+            muted_text: [95, 104, 118],
+            accent: [47, 111, 237],
+            selection: None,
+            warning: [161, 104, 24],
+            error: [190, 50, 50],
+        };
+        let custom_theme_paths = vec![".kuroya/themes/session.toml".to_owned()];
+        let active_custom_theme_path = Some(".kuroya/themes/session.toml".to_owned());
+        let editor_font_path = Some("fonts/editor.ttf".to_owned());
+        let ui_font_path = Some("fonts/ui.ttf".to_owned());
+        app.settings.theme = current_theme.clone();
+        app.settings.custom_theme_paths = custom_theme_paths.clone();
+        app.settings.active_custom_theme_path = active_custom_theme_path.clone();
+        app.settings.editor_font_path = editor_font_path.clone();
+        app.settings.ui_font_path = ui_font_path.clone();
+        app.settings.vim_keybindings = true;
+        app.settings.word_separators = ".".to_owned();
+
+        app.reload_settings();
+
+        assert_eq!(app.settings.theme, current_theme);
+        assert_eq!(app.settings.custom_theme_paths, custom_theme_paths);
+        assert_eq!(
+            app.settings.active_custom_theme_path,
+            active_custom_theme_path
+        );
+        assert_eq!(app.settings.editor_font_path, editor_font_path);
+        assert_eq!(app.settings.ui_font_path, ui_font_path);
+        assert!(app.settings.vim_keybindings);
+        assert_eq!(
+            app.settings.word_separators,
+            EditorSettings::default().word_separators
+        );
+        assert_eq!(app.settings_panel_draft.theme, app.settings.theme);
+        assert_eq!(app.status, restricted_workspace_settings_status());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reload_settings_restores_saved_appearance_selection() {
+        let root = temp_root("reload-saved-appearance");
+        let settings_path = settings_path(&root);
+        let saved_theme = ThemeSettings {
+            name: "Saved Theme".to_owned(),
+            background: [16, 18, 22],
+            panel: [24, 28, 34],
+            panel_alt: [34, 40, 48],
+            text: [230, 236, 244],
+            muted_text: [135, 146, 160],
+            accent: [88, 166, 255],
+            selection: None,
+            warning: [210, 153, 34],
+            error: [248, 81, 73],
+        };
+        let custom_theme_paths = vec![".kuroya/themes/saved.toml".to_owned()];
+        let active_custom_theme_path = Some(".kuroya/themes/saved.toml".to_owned());
+        let editor_font_path = Some("fonts/saved-editor.ttf".to_owned());
+        let ui_font_path = Some("fonts/saved-ui.ttf".to_owned());
+        let saved_settings = EditorSettings {
+            theme: saved_theme.clone(),
+            custom_theme_paths: custom_theme_paths.clone(),
+            active_custom_theme_path: active_custom_theme_path.clone(),
+            editor_font_path: editor_font_path.clone(),
+            ui_font_path: ui_font_path.clone(),
+            ..EditorSettings::default()
+        };
+        saved_settings.save(&settings_path).unwrap();
+
+        let mut app = app_for_test(root.clone());
+
+        app.reload_settings();
+
+        assert_eq!(app.settings.theme, saved_theme);
+        assert_eq!(app.settings.custom_theme_paths, custom_theme_paths);
+        assert_eq!(
+            app.settings.active_custom_theme_path,
+            active_custom_theme_path
+        );
+        assert_eq!(app.settings.editor_font_path, editor_font_path);
+        assert_eq!(app.settings.ui_font_path, ui_font_path);
+        assert_eq!(app.settings_panel_draft.theme, app.settings.theme);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reload_settings_adds_configured_lsp_server_and_retries_unavailable_language() {
+        let root = temp_root("reload-lsp-configured-server");
+        let settings = settings_path(&root);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(
+            &settings,
+            r#"
+            [[lsp_servers]]
+            language = "go"
+            command = "gopls"
+            root_markers = ["go.mod", "go.work"]
+            "#,
+        )
+        .unwrap();
+
+        let mut app = app_for_test(root.clone());
+        app.lsp_unavailable.insert("go".to_owned());
+        app.lsp_restart_attempts.insert("go".to_owned(), 2);
+        app.pending_lsp_restarts
+            .insert("go".to_owned(), Instant::now());
+
+        app.reload_settings();
+
+        let go = app
+            .settings
+            .lsp_server_configs()
+            .into_iter()
+            .find(|config| config.language == "go")
+            .expect("configured Go LSP should be available");
+        assert_eq!(go.command, "gopls");
+        assert!(!app.lsp_unavailable.contains("go"));
+        assert!(!app.lsp_restart_attempts.contains_key("go"));
+        assert!(!app.pending_lsp_restarts.contains_key("go"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reload_settings_stops_active_lsp_clients_when_server_config_changes() {
+        let root = temp_root("reload-lsp-config-change");
+        let settings = settings_path(&root);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(
+            &settings,
+            r#"
+            [[lsp_servers]]
+            language = "rust"
+            command = "rust-analyzer-custom"
+            root_markers = ["Cargo.toml"]
+            "#,
+        )
+        .unwrap();
+
+        let mut app = app_for_test(root.clone());
+        app.lsp_clients
+            .insert("rust".to_owned(), LspClientHandle::accepting_for_test());
+        app.lsp_unavailable.insert("rust".to_owned());
+        app.lsp_restart_attempts.insert("rust".to_owned(), 2);
+        app.pending_lsp_restarts
+            .insert("rust".to_owned(), Instant::now());
+
+        app.reload_settings();
+
+        assert!(app.lsp_clients.is_empty());
+        assert!(app.lsp_unavailable.is_empty());
+        assert!(app.lsp_restart_attempts.is_empty());
+        assert!(app.pending_lsp_restarts.is_empty());
+        assert_eq!(
+            app.settings
+                .lsp_server_configs()
+                .into_iter()
+                .find(|config| config.language == "rust")
+                .expect("rust config should be present")
+                .command,
+            "rust-analyzer-custom"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -531,7 +897,7 @@ mod tests {
         let (tx, rx) = crate::ui_event_channel::ui_event_channel();
         let settings = EditorSettings::default();
         let trusted_workspaces = trusted.then(|| root.clone()).into_iter().collect();
-        KuroyaApp::from_startup_context(AppStartupContext {
+        let mut app = KuroyaApp::from_startup_context(AppStartupContext {
             runtime: Runtime::new().expect("test runtime"),
             tx,
             rx,
@@ -548,7 +914,9 @@ mod tests {
             trusted_workspaces,
             now: Instant::now(),
             startup_timings: Vec::new(),
-        })
+        });
+        app.app_state_path_override = Some(root.join("app-state.json"));
+        app
     }
 
     fn temp_root(name: &str) -> PathBuf {

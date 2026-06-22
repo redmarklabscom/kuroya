@@ -56,7 +56,6 @@ impl KuroyaApp {
             ctx.request_repaint_after(remaining);
         }
         let (anchor, offset) = hover_window_anchor(self.settings.hover_above);
-        let target_label = cached_hover_target_label(ctx, &hover.path, hover.line, hover.column);
         let contents = cached_bounded_hover_markdown(ctx, hover);
 
         egui::Window::new("LSP Hover")
@@ -65,6 +64,13 @@ impl KuroyaApp {
             .anchor(anchor, offset)
             .default_size([420.0, 220.0])
             .show(ctx, |ui| {
+                let target_label = cached_hover_target_label(
+                    ctx,
+                    &hover.path,
+                    hover.line,
+                    hover.column,
+                    ui.visuals().weak_text_color(),
+                );
                 ui.horizontal(|ui| {
                     ui.label(target_label.as_ref().clone());
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
@@ -87,7 +93,7 @@ impl KuroyaApp {
                     ui.label(
                         RichText::new(warning)
                             .small()
-                            .color(Color32::from_rgb(231, 185, 87)),
+                            .color(ui.visuals().warn_fg_color),
                     );
                 }
 
@@ -131,10 +137,11 @@ fn cached_hover_target_label(
     path: &Path,
     line: usize,
     column: usize,
+    text_color: Color32,
 ) -> Arc<RichText> {
     ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<LspHoverDisplayCache>(Id::new(LSP_HOVER_DISPLAY_CACHE_ID))
-            .target_label(path, line, column)
+            .target_label(path, line, column, text_color)
     })
 }
 
@@ -155,8 +162,14 @@ struct LspHoverDisplayCache {
 }
 
 impl LspHoverDisplayCache {
-    fn target_label(&mut self, path: &Path, line: usize, column: usize) -> Arc<RichText> {
-        self.target_label.label(path, line, column)
+    fn target_label(
+        &mut self,
+        path: &Path,
+        line: usize,
+        column: usize,
+        text_color: Color32,
+    ) -> Arc<RichText> {
+        self.target_label.label(path, line, column, text_color)
     }
 
     fn contents(&mut self, hover: &crate::transient_state::LspHoverPopup) -> Arc<str> {
@@ -171,22 +184,29 @@ struct LspHoverTargetLabelCache {
 }
 
 impl LspHoverTargetLabelCache {
-    fn label(&mut self, path: &Path, line: usize, column: usize) -> Arc<RichText> {
+    fn label(
+        &mut self,
+        path: &Path,
+        line: usize,
+        column: usize,
+        text_color: Color32,
+    ) -> Arc<RichText> {
         let target_matches = self
             .key
             .as_ref()
-            .is_some_and(|key| key.matches(path, line, column));
+            .is_some_and(|key| key.matches(path, line, column, text_color));
         if target_matches {
             if let Some(label) = &self.label {
                 return Arc::clone(label);
             }
         }
 
-        let label = Arc::new(hover_target_rich_text(path, line, column));
+        let label = Arc::new(hover_target_rich_text(path, line, column, text_color));
         self.key = Some(LspHoverTargetLabelKey {
             path: path.to_path_buf(),
             line,
             column,
+            text_color: color_cache_key(text_color),
         });
         self.label = Some(Arc::clone(&label));
         label
@@ -198,11 +218,15 @@ struct LspHoverTargetLabelKey {
     path: PathBuf,
     line: usize,
     column: usize,
+    text_color: [u8; 4],
 }
 
 impl LspHoverTargetLabelKey {
-    fn matches(&self, path: &Path, line: usize, column: usize) -> bool {
-        self.path.as_path() == path && self.line == line && self.column == column
+    fn matches(&self, path: &Path, line: usize, column: usize, text_color: Color32) -> bool {
+        self.path.as_path() == path
+            && self.line == line
+            && self.column == column
+            && self.text_color == color_cache_key(text_color)
     }
 }
 
@@ -334,10 +358,19 @@ pub(crate) fn bounded_hover_markdown(contents: &str) -> Cow<'_, str> {
     Cow::Owned(bounded)
 }
 
-fn hover_target_rich_text(path: &Path, line: usize, column: usize) -> RichText {
+fn hover_target_rich_text(
+    path: &Path,
+    line: usize,
+    column: usize,
+    text_color: Color32,
+) -> RichText {
     RichText::new(hover_target_label(path, line, column))
         .small()
-        .color(Color32::from_rgb(126, 136, 150))
+        .color(text_color)
+}
+
+fn color_cache_key(color: Color32) -> [u8; 4] {
+    [color.r(), color.g(), color.b(), color.a()]
 }
 
 fn hover_target_label(path: &Path, line: usize, column: usize) -> String {
@@ -357,7 +390,7 @@ mod tests {
         hover_window_anchor,
     };
     use crate::{path_display::DISPLAY_PATH_LABEL_MAX_CHARS, transient_state::LspHoverPopup};
-    use eframe::egui::Align2;
+    use eframe::egui::{Align2, Color32};
     use kuroya_core::TextBuffer;
     use std::{
         path::PathBuf,
@@ -498,13 +531,13 @@ mod tests {
         let path = PathBuf::from("workspace/src/main.rs");
         let mut cache = LspHoverTargetLabelCache::default();
 
-        let first = cache.label(&path, 8, 13);
-        let second = cache.label(&path, 8, 13);
+        let first = cache.label(&path, 8, 13, Color32::WHITE);
+        let second = cache.label(&path, 8, 13, Color32::WHITE);
 
         assert!(std::sync::Arc::ptr_eq(&first, &second));
         assert_eq!(first.text(), "main.rs:8:13");
 
-        let third = cache.label(&path, 8, 14);
+        let third = cache.label(&path, 8, 14, Color32::WHITE);
 
         assert!(!std::sync::Arc::ptr_eq(&first, &third));
         assert_eq!(third.text(), "main.rs:8:14");

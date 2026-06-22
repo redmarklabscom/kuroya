@@ -3,13 +3,14 @@ use crate::{
     lsp_lifecycle::background_language_block_reason, ui_events::UiEvent,
 };
 use kuroya_core::diagnostics::static_diagnostics_scan_allowed;
-use kuroya_core::{BufferId, TextBuffer, analyze_text};
+use kuroya_core::{BufferId, LanguageId, TextBuffer, analyze_text};
 use std::{collections::HashMap, path::PathBuf};
 
 impl KuroyaApp {
     pub(crate) fn spawn_diagnostics_for(&mut self, id: BufferId) {
-        let Some((path, version, background_blocked)) = self.buffer(id).map(|buffer| {
+        let Some((path, version, language, background_blocked)) = self.buffer(id).map(|buffer| {
             let path = self.diagnostic_path_for(buffer);
+            let language = buffer.language();
             let background_blocked = background_language_block_reason(
                 id,
                 buffer,
@@ -17,7 +18,7 @@ impl KuroyaApp {
                 &self.binary_preview_buffers,
             )
             .is_some();
-            (path, buffer.version(), background_blocked)
+            (path, buffer.version(), language, background_blocked)
         }) else {
             self.clear_static_diagnostics_request(id);
             return;
@@ -33,7 +34,7 @@ impl KuroyaApp {
             self.clear_static_diagnostics_request(id);
             return;
         };
-        if !static_diagnostics_should_scan_text(text_len_bytes) {
+        if !static_diagnostics_should_scan_text(text_len_bytes, language) {
             self.invalidate_static_diagnostics_request(id);
             self.diagnostics.replace_static(path, Vec::new());
             return;
@@ -115,8 +116,12 @@ impl KuroyaApp {
     }
 }
 
-fn static_diagnostics_should_scan_text(byte_len: usize) -> bool {
-    static_diagnostics_scan_allowed(byte_len)
+fn static_diagnostics_should_scan_text(byte_len: usize, language: LanguageId) -> bool {
+    static_diagnostics_scan_allowed(byte_len) && static_diagnostics_language_allowed(language)
+}
+
+fn static_diagnostics_language_allowed(language: LanguageId) -> bool {
+    !matches!(language, LanguageId::PlainText | LanguageId::Diff)
 }
 
 fn reserve_static_diagnostics_request_id_state(
@@ -219,17 +224,36 @@ mod tests {
     use super::{
         begin_static_diagnostics_request_state, clear_static_diagnostics_request_state,
         finish_static_diagnostics_request_state, invalidate_static_diagnostics_request_state,
-        static_diagnostics_should_scan_text,
+        static_diagnostics_language_allowed, static_diagnostics_should_scan_text,
     };
     use std::collections::{HashMap, HashSet};
 
     #[test]
     fn static_diagnostics_scan_guard_allows_limit_and_rejects_oversize() {
         assert!(static_diagnostics_should_scan_text(
-            kuroya_core::diagnostics::STATIC_DIAGNOSTIC_SCAN_MAX_BYTES
+            kuroya_core::diagnostics::STATIC_DIAGNOSTIC_SCAN_MAX_BYTES,
+            kuroya_core::LanguageId::Rust
         ));
         assert!(!static_diagnostics_should_scan_text(
-            kuroya_core::diagnostics::STATIC_DIAGNOSTIC_SCAN_MAX_BYTES + 1
+            kuroya_core::diagnostics::STATIC_DIAGNOSTIC_SCAN_MAX_BYTES + 1,
+            kuroya_core::LanguageId::Rust
+        ));
+    }
+
+    #[test]
+    fn static_diagnostics_skip_plain_text_and_diff_buffers() {
+        assert!(!static_diagnostics_language_allowed(
+            kuroya_core::LanguageId::PlainText
+        ));
+        assert!(!static_diagnostics_language_allowed(
+            kuroya_core::LanguageId::Diff
+        ));
+        assert!(static_diagnostics_language_allowed(
+            kuroya_core::LanguageId::Rust
+        ));
+        assert!(!static_diagnostics_should_scan_text(
+            128,
+            kuroya_core::LanguageId::PlainText
         ));
     }
 

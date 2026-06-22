@@ -7,7 +7,7 @@ use crate::{
     workspace_state::paths_match_lexically,
     workspace_trust::workspace_path_contains_lexically,
 };
-use eframe::egui::{self, Color32, Context, Key, RichText, ScrollArea};
+use eframe::egui::{self, Context, Key, RichText, ScrollArea};
 use kuroya_core::LspTextEdit;
 #[cfg(test)]
 use std::collections::BTreeMap;
@@ -117,7 +117,7 @@ impl KuroyaApp {
                 ui.label(
                     RichText::new(format!("{file_count} files, {edit_count} edits"))
                         .small()
-                        .color(Color32::from_rgb(126, 136, 150)),
+                        .color(ui.visuals().weak_text_color()),
                 );
                 ui.separator();
 

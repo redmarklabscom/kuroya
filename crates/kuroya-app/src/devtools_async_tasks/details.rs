@@ -10,6 +10,7 @@ use std::{
 };
 
 const BRANCH_RENAME_DETAIL_SEPARATOR: &str = " -> ";
+const PLUGIN_COMMAND_DETAIL_MAX_CHARS: usize = 96;
 
 pub(super) fn finished(name: &'static str, detail: String) -> AsyncTaskEventLabel {
     AsyncTaskEventLabel {
@@ -82,6 +83,10 @@ pub(super) fn query_detail(query: &str) -> String {
     detail.push_str(&query);
     detail.push('`');
     detail
+}
+
+pub(crate) fn plugin_command_task_detail(command_id: &str) -> String {
+    async_task_detail_with_max(command_id, PLUGIN_COMMAND_DETAIL_MAX_CHARS, "command")
 }
 
 pub(crate) fn paths_detail(paths: &[PathBuf]) -> String {

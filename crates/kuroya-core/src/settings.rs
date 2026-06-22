@@ -2,6 +2,7 @@
 use crate::buffer::TextBuffer;
 use crate::{
     buffer::DEFAULT_WORD_SEPARATORS,
+    command::Command,
     git::{
         DEFAULT_DIFF_CONTEXT_LINES, DEFAULT_DIFF_HIDE_UNCHANGED_REGIONS_MINIMUM_LINE_COUNT,
         DEFAULT_DIFF_HIDE_UNCHANGED_REGIONS_REVEAL_LINE_COUNT,
@@ -11,6 +12,7 @@ use crate::{
         GitSmartCommitChanges, GitTimelineDate,
     },
     keymap::Keymap,
+    lsp::{LspServerConfig, default_server_configs},
 };
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -57,7 +59,7 @@ pub use terminal_types::*;
 
 pub const DEFAULT_TERMINAL_SCROLLBACK_ROWS: usize = 10_000;
 pub const MIN_TERMINAL_SCROLLBACK_ROWS: usize = 100;
-pub const MAX_TERMINAL_SCROLLBACK_ROWS: usize = 200_000;
+pub const MAX_TERMINAL_SCROLLBACK_ROWS: usize = 50_000;
 pub const DEFAULT_TERMINAL_MOUSE_WHEEL_SCROLL_SENSITIVITY: f32 = 1.0;
 pub const DEFAULT_TERMINAL_FAST_SCROLL_SENSITIVITY: f32 = 5.0;
 pub const MIN_TERMINAL_SCROLL_SENSITIVITY: f32 = 0.0;
@@ -196,9 +198,6 @@ pub const MAX_EDITOR_SCROLL_SENSITIVITY: f32 = 100.0;
 pub const DEFAULT_EDITOR_COLOR_DECORATORS_LIMIT: usize = 500;
 pub const MIN_EDITOR_COLOR_DECORATORS_LIMIT: usize = 1;
 pub const MAX_EDITOR_COLOR_DECORATORS_LIMIT: usize = 1_000_000;
-pub const DEFAULT_EDITOR_SELECTION_HIGHLIGHT_MAX_LENGTH: usize = 200;
-pub const MIN_EDITOR_SELECTION_HIGHLIGHT_MAX_LENGTH: usize = 0;
-pub const MAX_EDITOR_SELECTION_HIGHLIGHT_MAX_LENGTH: usize = 10_000;
 pub const DEFAULT_EDITOR_FIND_SEED_SEARCH_STRING_FROM_SELECTION:
     EditorFindSeedSearchStringFromSelection = EditorFindSeedSearchStringFromSelection::Always;
 pub const DEFAULT_EDITOR_FIND_AUTO_FIND_IN_SELECTION: EditorFindAutoFindInSelection =
@@ -209,9 +208,6 @@ pub const DEFAULT_EDITOR_FIND_LOOP: bool = true;
 pub const DEFAULT_EDITOR_FIND_CLOSE_ON_RESULT: bool = false;
 pub const DEFAULT_EDITOR_FIND_GLOBAL_FIND_CLIPBOARD: bool = false;
 pub const DEFAULT_EDITOR_FIND_ADD_EXTRA_SPACE_ON_TOP: bool = true;
-pub const DEFAULT_OCCURRENCES_HIGHLIGHT_DELAY_MS: usize = 0;
-pub const MIN_OCCURRENCES_HIGHLIGHT_DELAY_MS: usize = 0;
-pub const MAX_OCCURRENCES_HIGHLIGHT_DELAY_MS: usize = 2_000;
 pub const DEFAULT_QUICK_SUGGESTIONS_DELAY_MS: usize = 10;
 pub const MIN_QUICK_SUGGESTIONS_DELAY_MS: usize = 0;
 pub const MAX_QUICK_SUGGESTIONS_DELAY_MS: usize = 60_000;
@@ -327,6 +323,7 @@ pub struct ThemeSettings {
     pub text: [u8; 3],
     pub muted_text: [u8; 3],
     pub accent: [u8; 3],
+    pub selection: Option<[u8; 3]>,
     pub warning: [u8; 3],
     pub error: [u8; 3],
 }
@@ -341,6 +338,7 @@ impl Default for ThemeSettings {
             text: [222, 226, 233],
             muted_text: [126, 136, 150],
             accent: [91, 141, 239],
+            selection: None,
             warning: [231, 185, 87],
             error: [232, 98, 98],
         }
@@ -359,6 +357,7 @@ impl ThemeSettings {
                 text: [229, 231, 235],
                 muted_text: [143, 149, 161],
                 accent: [116, 199, 154],
+                selection: None,
                 warning: [231, 185, 87],
                 error: [232, 98, 98],
             },
@@ -370,6 +369,7 @@ impl ThemeSettings {
                 text: [224, 231, 240],
                 muted_text: [133, 146, 164],
                 accent: [91, 141, 239],
+                selection: None,
                 warning: [231, 185, 87],
                 error: [232, 98, 98],
             },
@@ -381,8 +381,81 @@ impl ThemeSettings {
                 text: [36, 41, 49],
                 muted_text: [91, 99, 113],
                 accent: [47, 111, 237],
+                selection: None,
                 warning: [161, 104, 24],
                 error: [190, 50, 50],
+            },
+            Self {
+                name: "Midnight Teal".to_owned(),
+                background: [9, 24, 28],
+                panel: [14, 34, 39],
+                panel_alt: [23, 47, 54],
+                text: [221, 234, 232],
+                muted_text: [128, 157, 160],
+                accent: [45, 212, 191],
+                selection: None,
+                warning: [230, 179, 71],
+                error: [238, 99, 91],
+            },
+            Self {
+                name: "Forest Dusk".to_owned(),
+                background: [15, 22, 18],
+                panel: [22, 32, 26],
+                panel_alt: [31, 45, 36],
+                text: [226, 232, 224],
+                muted_text: [139, 153, 140],
+                accent: [116, 196, 118],
+                selection: None,
+                warning: [217, 168, 70],
+                error: [225, 92, 92],
+            },
+            Self {
+                name: "Plum Dusk".to_owned(),
+                background: [24, 18, 29],
+                panel: [34, 26, 41],
+                panel_alt: [45, 36, 55],
+                text: [232, 226, 237],
+                muted_text: [157, 140, 166],
+                accent: [203, 137, 229],
+                selection: None,
+                warning: [230, 181, 92],
+                error: [235, 105, 116],
+            },
+            Self {
+                name: "Warm Paper".to_owned(),
+                background: [250, 247, 239],
+                panel: [240, 235, 225],
+                panel_alt: [229, 222, 210],
+                text: [49, 43, 36],
+                muted_text: [111, 101, 88],
+                accent: [28, 111, 145],
+                selection: None,
+                warning: [157, 99, 31],
+                error: [177, 55, 58],
+            },
+            Self {
+                name: "Clear Day".to_owned(),
+                background: [248, 250, 252],
+                panel: [235, 240, 246],
+                panel_alt: [224, 231, 240],
+                text: [31, 41, 55],
+                muted_text: [91, 103, 120],
+                accent: [37, 99, 235],
+                selection: None,
+                warning: [166, 113, 32],
+                error: [190, 50, 70],
+            },
+            Self {
+                name: "Sage Light".to_owned(),
+                background: [245, 248, 244],
+                panel: [232, 239, 232],
+                panel_alt: [219, 229, 219],
+                text: [36, 48, 40],
+                muted_text: [88, 106, 92],
+                accent: [38, 139, 111],
+                selection: None,
+                warning: [153, 101, 24],
+                error: [181, 63, 70],
             },
         ]
     }
@@ -409,6 +482,21 @@ impl ThemeSettings {
             .unwrap_or_default();
         presets[next].clone()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditorVimSettings {
+    pub disabled_bindings: Vec<String>,
+    pub key_overrides: Vec<EditorVimKeyOverride>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditorVimKeyOverride {
+    pub before: String,
+    pub after: String,
+    pub command: Option<Command>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -478,7 +566,9 @@ pub struct EditorSettings {
     pub linked_editing: bool,
     pub rename_on_type: bool,
     pub tab_focus_mode: bool,
+    #[serde(alias = "vim_mode")]
     pub vim_keybindings: bool,
+    pub vim: EditorVimSettings,
     pub quick_suggestions: bool,
     pub quick_suggestions_delay_ms: usize,
     pub suggest_on_trigger_characters: bool,
@@ -557,8 +647,6 @@ pub struct EditorSettings {
         EditorInlineSuggestShowOnSuggestConflict,
     pub inline_suggest_experimental_empty_response_information: bool,
     pub inline_completions_accessibility_verbose: bool,
-    pub occurrences_highlight: EditorOccurrencesHighlight,
-    pub occurrences_highlight_delay_ms: usize,
     pub lightbulb: EditorLightbulbMode,
     pub render_validation_decorations: EditorRenderValidationDecorations,
     pub document_highlights_enabled: bool,
@@ -662,6 +750,8 @@ pub struct EditorSettings {
     pub status_bar_visible: bool,
     pub devtools_verbose_logging: bool,
     pub devtools_profiling_enabled: bool,
+    #[serde(default)]
+    pub lsp_servers: Vec<LspServerConfig>,
     pub window_zoom_level: f32,
     pub line_numbers: EditorLineNumbers,
     pub line_decorations_width: EditorLineDecorationsWidth,
@@ -692,9 +782,6 @@ pub struct EditorSettings {
     pub unicode_highlight_allowed_locales: BTreeMap<String, bool>,
     pub render_line_highlight: EditorRenderLineHighlight,
     pub render_line_highlight_only_when_focus: bool,
-    pub selection_highlight: bool,
-    pub selection_highlight_max_length: usize,
-    pub selection_highlight_multiline: bool,
     pub smart_select_select_leading_and_trailing_whitespace: bool,
     pub smart_select_select_subwords: bool,
     pub find_seed_search_string_from_selection: EditorFindSeedSearchStringFromSelection,
@@ -938,12 +1025,31 @@ pub struct EditorSettings {
     pub trim_final_newlines: bool,
     pub updates_github_repository: String,
     pub theme: ThemeSettings,
+    pub custom_theme_paths: Vec<String>,
+    pub active_custom_theme_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditorSettingsLoad {
     pub settings: EditorSettings,
     pub quarantined_path: Option<PathBuf>,
+}
+
+pub fn effective_lsp_server_configs(settings_servers: &[LspServerConfig]) -> Vec<LspServerConfig> {
+    let mut servers = default_server_configs();
+    for server in settings_servers {
+        let mut server = server.clone();
+        server.language.make_ascii_lowercase();
+        if let Some(index) = servers
+            .iter()
+            .position(|existing| existing.language == server.language)
+        {
+            servers[index] = server;
+        } else {
+            servers.push(server);
+        }
+    }
+    servers
 }
 
 fn current_settings_schema_version() -> u32 {

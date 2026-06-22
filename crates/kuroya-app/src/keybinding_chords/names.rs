@@ -45,6 +45,7 @@ pub(super) fn key_name_for_chord(key: Key) -> Option<&'static str> {
         Key::Enter => Some("Enter"),
         Key::Tab => Some("Tab"),
         Key::Space => Some("Space"),
+        Key::Escape => Some("Escape"),
         Key::Backspace => Some("Backspace"),
         Key::Delete => Some("Delete"),
         Key::Home => Some("Home"),

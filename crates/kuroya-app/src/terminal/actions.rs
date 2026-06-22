@@ -334,7 +334,7 @@ impl TerminalPane {
         let scrollback_rows = clamp_terminal_scrollback_rows(scrollback_rows);
         self.scrollback_rows = scrollback_rows;
         for session in &mut self.sessions {
-            session.scrollback_rows = scrollback_rows;
+            session.set_scrollback_rows(scrollback_rows);
         }
     }
 
@@ -610,6 +610,9 @@ impl TerminalPane {
     }
 
     pub(super) fn open_new_session(&mut self) {
+        if !self.can_open_session() {
+            return;
+        }
         let id = self.next_session_id;
         self.next_session_id += 1;
 
@@ -619,6 +622,9 @@ impl TerminalPane {
     }
 
     pub(crate) fn open_new_session_at(&mut self, cwd: std::path::PathBuf) {
+        if !self.can_open_session() {
+            return;
+        }
         let id = self.next_session_id;
         self.next_session_id += 1;
 
@@ -626,7 +632,10 @@ impl TerminalPane {
         self.open_session_with_cwd(session, cwd);
     }
 
-    pub(crate) fn open_workspace_task(&mut self, task: &WorkspaceTask) -> usize {
+    pub(crate) fn open_workspace_task(&mut self, task: &WorkspaceTask) -> Option<usize> {
+        if !self.can_open_session() {
+            return None;
+        }
         let id = self.next_session_id;
         self.next_session_id += 1;
 
@@ -643,7 +652,7 @@ impl TerminalPane {
             self.repaint_context.clone(),
         );
         self.activate_opened_session(session);
-        id
+        Some(id)
     }
 
     fn open_session_with_cwd(
@@ -675,6 +684,9 @@ impl TerminalPane {
     }
 
     pub(super) fn split_active_session(&mut self) {
+        if !self.can_open_session() {
+            return;
+        }
         let parent_index = self.active_session_index();
         let id = self.next_session_id;
         self.next_session_id += 1;
@@ -716,6 +728,10 @@ impl TerminalPane {
         self.selected_session_id = None;
         self.selected_text = None;
         self.selection_drag = None;
+    }
+
+    pub(crate) fn can_open_session(&self) -> bool {
+        self.sessions.len() < super::TERMINAL_MAX_SESSIONS
     }
 
     pub(super) fn close_active_session(&mut self) {
@@ -1620,6 +1636,95 @@ impl super::TerminalSession {
 
     pub(super) fn copyable_text(&self) -> String {
         trimmed_terminal_text(&self.parser.screen().contents())
+    }
+
+    fn set_scrollback_rows(&mut self, scrollback_rows: usize) {
+        let scrollback_rows = clamp_terminal_scrollback_rows(scrollback_rows);
+        if self.scrollback_rows == scrollback_rows {
+            return;
+        }
+
+        self.scrollback_rows = scrollback_rows;
+        self.rebuild_parser_with_scrollback_rows(scrollback_rows);
+    }
+
+    fn rebuild_parser_with_scrollback_rows(&mut self, scrollback_rows: usize) {
+        let (rows, cols) = self.parser.screen().size();
+        let previous_scrollback = self.parser.screen().scrollback();
+        let alternate_screen = self.parser.screen().alternate_screen();
+        let retained_rows = if alternate_screen {
+            Vec::new()
+        } else {
+            self.retained_parser_scrollback_rows(scrollback_rows)
+        };
+        let state = {
+            let screen = self.parser.screen_mut();
+            screen.set_scrollback(0);
+            screen.state_formatted()
+        };
+        let callbacks = std::mem::take(self.parser.callbacks_mut());
+        let mut parser = vt100::Parser::new_with_callbacks(rows, cols, scrollback_rows, callbacks);
+
+        for row in &retained_rows {
+            parser.process(row.as_bytes());
+            parser.process(b"\r\n");
+        }
+        if alternate_screen {
+            parser.process(b"\x1b[?1049h");
+        }
+        parser.process(&state);
+        parser
+            .screen_mut()
+            .set_scrollback(previous_scrollback.min(retained_rows.len()));
+        self.parser = parser;
+    }
+
+    pub(super) fn clear_scrollback_from_terminal(&mut self) {
+        self.rebuild_parser_without_scrollback();
+        self.replace_search_buffer(self.copyable_text());
+    }
+
+    fn rebuild_parser_without_scrollback(&mut self) {
+        let (rows, cols) = self.parser.screen().size();
+        let alternate_screen = self.parser.screen().alternate_screen();
+        let state = {
+            let screen = self.parser.screen_mut();
+            screen.set_scrollback(0);
+            screen.state_formatted()
+        };
+        let callbacks = std::mem::take(self.parser.callbacks_mut());
+        let mut parser =
+            vt100::Parser::new_with_callbacks(rows, cols, self.scrollback_rows, callbacks);
+
+        if alternate_screen {
+            parser.process(b"\x1b[?1049h");
+        }
+        parser.process(&state);
+        self.parser = parser;
+    }
+
+    fn retained_parser_scrollback_rows(&mut self, limit: usize) -> Vec<String> {
+        let screen_rows = usize::from(self.parser.screen().size().0).max(1);
+        let cols = self.parser.screen().size().1;
+        let screen = self.parser.screen_mut();
+        let previous_scrollback = screen.scrollback();
+        screen.set_scrollback(usize::MAX);
+        let available = screen.scrollback();
+        let retain = available.min(limit);
+        let first_retained = available.saturating_sub(retain);
+        let mut retained_rows = Vec::with_capacity(retain);
+        let mut row_index = first_retained;
+
+        while row_index < available {
+            let offset = available - row_index;
+            screen.set_scrollback(offset);
+            let take = offset.min(screen_rows);
+            retained_rows.extend(screen.rows(0, cols).take(take));
+            row_index += take;
+        }
+
+        screen.set_scrollback(previous_scrollback.min(available));
+        retained_rows
     }
 
     fn clear_buffer(&mut self) {

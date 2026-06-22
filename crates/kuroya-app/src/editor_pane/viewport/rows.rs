@@ -35,6 +35,7 @@ pub(super) fn render_visible_editor_rows(
         .visible(data.focused)
         .then(|| active_indent_guide_column_for_buffer(buffer, data.tab_width))
         .flatten();
+    let visuals = ui.visuals();
     let row_context = EditorRowContext {
         buffer,
         row_height: data.row_height,
@@ -43,6 +44,10 @@ pub(super) fn render_visible_editor_rows(
         gutter_width: data.gutter_width,
         char_width: data.char_width,
         font_size: data.font_size,
+        text_color: visuals.text_color(),
+        weak_text_color: visuals.weak_text_color(),
+        selection_bg_fill: data.selection_bg_fill,
+        warn_fg_color: visuals.warn_fg_color,
         line_numbers: data.line_numbers,
         select_on_line_numbers: data.select_on_line_numbers,
         render_whitespace: data.render_whitespace,
@@ -103,8 +108,6 @@ pub(super) fn render_visible_editor_rows(
         cursor_positions: &data.cursor_positions,
         selections: &data.selections,
         find_matches: &data.find_matches,
-        occurrence_highlight_ranges: &data.occurrence_highlight_ranges,
-        selection_highlight_ranges: &data.selection_highlight_ranges,
         active_find_match,
         document_highlight_ranges: &data.document_highlight_ranges,
         semantic_token_ranges: &data.semantic_token_ranges,
@@ -182,6 +185,7 @@ pub(super) fn render_visible_editor_rows(
                 data.tab_width,
                 batch.physical_lines.clone(),
                 data.syntax_highlighting,
+                ui.visuals().text_color(),
                 data.stop_rendering_line_after,
             );
             for visible_idx in batch.visible_rows {

@@ -9,9 +9,11 @@ use tokio::io::AsyncReadExt;
 
 mod paths;
 
+#[cfg(not(test))]
+pub(crate) use paths::app_state_path;
 pub(crate) use paths::{
-    app_state_dir, app_state_path, project_index_cache_path, session_path, session_snapshots_dir,
-    state_dir, workspace_snapshots_dir,
+    app_state_dir, project_index_cache_path, session_path, session_snapshots_dir, state_dir,
+    workspace_snapshots_dir,
 };
 
 static WRITE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);

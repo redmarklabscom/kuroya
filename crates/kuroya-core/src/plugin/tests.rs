@@ -502,7 +502,7 @@ fn plugin_manifest_rejects_absolute_sibling_prefix_path_escapes() {
     )
     .unwrap_err()
     .to_string();
-    assert!(error.contains("plugin entry must stay inside the plugin root"));
+    assert!(error.contains("plugin entry must be relative to the plugin root"));
 
     let sibling_theme = sibling.join("themes/dark.toml");
     let error = parse_plugin_manifest_toml(
@@ -511,7 +511,7 @@ fn plugin_manifest_rejects_absolute_sibling_prefix_path_escapes() {
     )
     .unwrap_err()
     .to_string();
-    assert!(error.contains("plugin theme path must stay inside the plugin root"));
+    assert!(error.contains("plugin theme path must be relative to the plugin root"));
 
     let sibling_syntax = sibling.join("syntax/example.sublime-syntax");
     let error = parse_plugin_manifest_toml(
@@ -520,39 +520,15 @@ fn plugin_manifest_rejects_absolute_sibling_prefix_path_escapes() {
     )
     .unwrap_err()
     .to_string();
-    assert!(error.contains("plugin syntax path must stay inside the plugin root"));
+    assert!(error.contains("plugin syntax path must be relative to the plugin root"));
 }
 
 #[cfg(windows)]
 #[test]
-fn plugin_manifest_normalizes_windows_case_variant_absolute_paths() {
+fn plugin_manifest_rejects_windows_absolute_manifest_paths() {
     let root = PathBuf::from(r"C:\Workspace\Plugin");
-    let manifest = parse_plugin_manifest_toml(
-        &root,
-        r#"
-                id = "example.plugin"
-                name = "Example"
-                version = "0.1.0"
-                entry = "c:\\workspace\\plugin\\bin\\plugin.wasm"
-
-                [[contributes.themes]]
-                id = "example-dark"
-                label = "Example Dark"
-                path = "c:\\workspace\\plugin\\themes\\dark.toml"
-            "#,
-    )
-    .unwrap();
-
-    assert_eq!(
-        manifest.manifest.entry,
-        Some(PathBuf::from(r"c:\workspace\plugin\bin\plugin.wasm"))
-    );
-    assert_eq!(
-        manifest.manifest.contributes.themes[0].path,
-        PathBuf::from(r"c:\workspace\plugin\themes\dark.toml")
-    );
-
     for path in [
+        r"c:\workspace\plugin\bin\plugin.wasm",
         r"\Workspace\Plugin\bin\plugin.wasm",
         r"C:bin\plugin.wasm",
         r"D:\Workspace\Plugin\bin\plugin.wasm",
@@ -574,7 +550,7 @@ fn plugin_command_registry_uses_declared_capability_and_dedupes_plugin_commands(
             id: "enabled.plugin".to_owned(),
             name: "Enabled Plugin".to_owned(),
             version: "0.1.0".to_owned(),
-            entry: None,
+            entry: Some(PathBuf::from("plugins/enabled/plugin.wasm")),
             activation_events: Vec::new(),
             capabilities: PluginCapabilities {
                 commands: true,
@@ -641,6 +617,43 @@ fn plugin_command_registry_uses_declared_capability_and_dedupes_plugin_commands(
 }
 
 #[test]
+fn plugin_command_registry_skips_commands_with_unsupported_runtime_capabilities() {
+    let plugin = PluginDescriptor {
+        root: PathBuf::from("plugins/workspace-read"),
+        manifest: PluginManifest {
+            api_version: PLUGIN_API_VERSION.to_owned(),
+            id: "workspace-read.plugin".to_owned(),
+            name: "Workspace Read".to_owned(),
+            version: "0.1.0".to_owned(),
+            entry: Some(PathBuf::from("plugins/workspace-read/plugin.wasm")),
+            activation_events: Vec::new(),
+            capabilities: PluginCapabilities {
+                commands: true,
+                workspace_read: true,
+                ..PluginCapabilities::default()
+            },
+            contributes: PluginContributions {
+                commands: vec![PluginCommandContribution {
+                    id: "workspace-read.run".to_owned(),
+                    title: "Run".to_owned(),
+                    category: None,
+                }],
+                ..PluginContributions::default()
+            },
+        },
+    };
+
+    let registry = PluginCommandRegistry::from_plugins(&[plugin]);
+
+    assert!(registry.is_empty());
+    assert!(
+        registry
+            .command("workspace-read.plugin", "workspace-read.run")
+            .is_none()
+    );
+}
+
+#[test]
 fn plugin_command_registry_bounds_combined_labels() {
     let plugin = PluginDescriptor {
         root: PathBuf::from("plugins/long-label"),
@@ -649,7 +662,7 @@ fn plugin_command_registry_bounds_combined_labels() {
             id: "long-label.plugin".to_owned(),
             name: "N".repeat(MAX_PLUGIN_DISPLAY_LABEL_CHARS),
             version: "0.1.0".to_owned(),
-            entry: None,
+            entry: Some(PathBuf::from("plugins/long-label/plugin.wasm")),
             activation_events: Vec::new(),
             capabilities: PluginCapabilities {
                 commands: true,
@@ -859,6 +872,37 @@ fn workspace_plugin_discovery_keeps_valid_plugins_when_one_manifest_fails() {
 }
 
 #[test]
+fn workspace_plugin_discovery_reports_duplicate_plugin_ids() {
+    let workspace = temp_root("duplicate-id-discovery");
+    let plugins_dir = workspace_plugins_dir(&workspace);
+    let first = plugins_dir.join("first");
+    let duplicate = plugins_dir.join("second");
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir_all(&duplicate).unwrap();
+    for root in [&first, &duplicate] {
+        fs::write(
+            plugin_manifest_path(root),
+            r#"
+                id = "same.plugin"
+                name = "Same"
+                version = "0.1.0"
+            "#,
+        )
+        .unwrap();
+    }
+
+    let discovery = discover_workspace_plugins(&workspace).unwrap();
+
+    assert_eq!(discovery.plugins.len(), 1);
+    assert_eq!(discovery.plugins[0].manifest.id, "same.plugin");
+    assert_eq!(discovery.errors.len(), 1);
+    assert_eq!(discovery.errors[0].root, duplicate);
+    assert!(discovery.errors[0].error.contains("duplicated"));
+
+    fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
 fn plugin_language_registry_uses_declared_capability_and_first_provider() {
     let first = PluginDescriptor {
         root: PathBuf::from("plugins/first"),
@@ -1038,6 +1082,162 @@ fn plugin_theme_registry_uses_declared_capability_and_first_provider() {
 }
 
 #[test]
+fn load_theme_settings_from_path_preserves_file_name() {
+    let root = temp_root("custom-theme-file");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("custom.toml");
+    fs::write(
+        &path,
+        r#"
+                name = "Custom Night"
+                background = [1, 2, 3]
+                panel = [4, 5, 6]
+                panel_alt = [7, 8, 9]
+                text = [10, 11, 12]
+                muted_text = [13, 14, 15]
+                accent = [16, 17, 18]
+                warning = [19, 20, 21]
+                error = [22, 23, 24]
+            "#,
+    )
+    .unwrap();
+
+    let theme = load_theme_settings_from_path(&path).unwrap();
+
+    assert_eq!(theme.name, "Custom Night");
+    assert_eq!(theme.background, [1, 2, 3]);
+    assert_eq!(theme.error, [22, 23, 24]);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_theme_settings_from_path_parses_friendly_palette_hex_colors() {
+    let root = temp_root("friendly-theme-palette");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("friendly.toml");
+    fs::write(
+        &path,
+        r##"
+                name = "Friendly Night"
+
+                [palette]
+                background = "#010203"
+                panel = "#112233"
+                panel_alt = "#abc"
+                text = "#AABBCC"
+                muted_text = "#000"
+                accent = "#5B8DEF"
+                selection = "#102a56"
+                warning = [19, 20, 21]
+                error = "#e86262"
+            "##,
+    )
+    .unwrap();
+
+    let theme = load_theme_settings_from_path(&path).unwrap();
+
+    assert_eq!(theme.name, "Friendly Night");
+    assert_eq!(theme.background, [1, 2, 3]);
+    assert_eq!(theme.panel_alt, [170, 187, 204]);
+    assert_eq!(theme.text, [170, 187, 204]);
+    assert_eq!(theme.muted_text, [0, 0, 0]);
+    assert_eq!(theme.accent, [91, 141, 239]);
+    assert_eq!(theme.selection, Some([16, 42, 86]));
+    assert_eq!(theme.warning, [19, 20, 21]);
+    assert_eq!(theme.error, [232, 98, 98]);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_theme_settings_from_path_accepts_colors_alias() {
+    let root = temp_root("friendly-theme-colors");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("friendly.toml");
+    fs::write(
+        &path,
+        r##"
+                name = "Alias Night"
+
+                [colors]
+                background = "#102030"
+                accent = "#123456"
+                error = [3, 2, 1]
+            "##,
+    )
+    .unwrap();
+
+    let theme = load_theme_settings_from_path(&path).unwrap();
+
+    assert_eq!(theme.name, "Alias Night");
+    assert_eq!(theme.background, [16, 32, 48]);
+    assert_eq!(theme.accent, [18, 52, 86]);
+    assert_eq!(theme.error, [3, 2, 1]);
+    assert_eq!(theme.panel, ThemeSettings::default().panel);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_theme_settings_from_path_rejects_invalid_friendly_color_value() {
+    let root = temp_root("friendly-theme-invalid-color");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("invalid.toml");
+    fs::write(
+        &path,
+        r#"
+                name = "Broken Night"
+
+                [palette]
+                accent = "blue"
+            "#,
+    )
+    .unwrap();
+
+    let error = load_theme_settings_from_path(&path)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("theme color accent"), "{error}");
+    assert!(error.contains("#RRGGBB"), "{error}");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_theme_settings_from_path_keeps_raw_theme_settings_format() {
+    let root = temp_root("raw-theme-compatibility");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("raw.toml");
+    fs::write(
+        &path,
+        r#"
+                name = "Raw Night"
+                background = [1, 2, 3]
+                panel = [4, 5, 6]
+                panel_alt = [7, 8, 9]
+                text = [10, 11, 12]
+                muted_text = [13, 14, 15]
+                accent = [16, 17, 18]
+                selection = [25, 26, 27]
+                warning = [19, 20, 21]
+                error = [22, 23, 24]
+            "#,
+    )
+    .unwrap();
+
+    let theme = load_theme_settings_from_path(&path).unwrap();
+
+    assert_eq!(theme.name, "Raw Night");
+    assert_eq!(theme.background, [1, 2, 3]);
+    assert_eq!(theme.selection, Some([25, 26, 27]));
+    assert_eq!(theme.error, [22, 23, 24]);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn load_plugin_theme_settings_uses_contribution_label() {
     let root = temp_root("theme-file");
     let theme_dir = root.join("themes");
@@ -1069,6 +1269,57 @@ fn load_plugin_theme_settings_uses_contribution_label() {
     assert_eq!(theme.name, "Example Dark");
     assert_eq!(theme.background, [1, 2, 3]);
     assert_eq!(theme.error, [22, 23, 24]);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_theme_settings_from_path_rejects_oversized_theme_file() {
+    let root = temp_root("oversized-custom-theme");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("huge.toml");
+    fs::write(
+        &path,
+        vec![b'a'; usize::try_from(MAX_PLUGIN_THEME_BYTES + 1).unwrap()],
+    )
+    .unwrap();
+
+    let error = load_theme_settings_from_path(&path)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("plugin file limit"));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_theme_settings_from_path_reports_unreadable_path() {
+    let root = temp_root("missing-custom-theme");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("missing.toml");
+
+    let error = load_theme_settings_from_path(&path)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("could not read"));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_theme_settings_from_path_reports_parse_errors() {
+    let root = temp_root("invalid-custom-theme");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("invalid.toml");
+    fs::write(&path, "name = [").unwrap();
+
+    let error = load_theme_settings_from_path(&path)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("could not parse"));
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1196,7 +1447,7 @@ fn plugin_contribution_registries_ignore_duplicate_plugin_ids() {
             id: "same.plugin".to_owned(),
             name: "First".to_owned(),
             version: "0.1.0".to_owned(),
-            entry: None,
+            entry: Some(PathBuf::from("plugins/first/plugin.wasm")),
             activation_events: Vec::new(),
             capabilities: PluginCapabilities {
                 commands: true,

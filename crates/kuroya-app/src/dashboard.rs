@@ -3,12 +3,14 @@ use crate::{
     native_paths::normalize_native_path,
     path_display::sanitized_display_label_cow,
     quick_open::normalize_quick_open_workspace_path,
-    ui_icons::{IconKind, draw_icon, icon_text_button},
+    ui_icons::{IconKind, icon_text_button},
     workspace_tasks_runtime::workspace_task_fingerprint,
 };
 use eframe::egui::{
-    self, Align2, Color32, Rect, RichText, Sense, Stroke, StrokeKind, TextStyle, pos2, vec2,
+    self, Align2, Color32, ColorImage, RichText, Sense, Stroke, TextStyle, TextureHandle,
+    TextureOptions, pos2, vec2,
 };
+use image::ImageFormat;
 use kuroya_core::{
     Command, WorkspaceTask, WorkspaceTaskKind, workspace_task_command_preview,
     workspace_task_kind_title,
@@ -31,9 +33,16 @@ const DASHBOARD_RECENT_CANDIDATE_SCAN_MIN: usize = 32;
 const DASHBOARD_RECENT_CANDIDATE_SCAN_MAX: usize = 128;
 const DASHBOARD_DISPLAY_TEXT_CACHE_ID: &str = "kuroya_dashboard_display_text_cache";
 const DASHBOARD_DISPLAY_TEXT_CACHE_LIMIT: usize = 48;
+const DASHBOARD_LOGO_SIZE: f32 = 68.0;
+const DASHBOARD_LOGO_BYTES: &[u8] = include_bytes!("../../../assets/logos/kuroya-mark.png");
 const DASHBOARD_WORKSPACE_TASKS_UNTRUSTED_LABEL: &str =
     "Workspace tasks hidden until this workspace is trusted";
 const DASHBOARD_WORKSPACE_TASKS_EMPTY_LABEL: &str = "No workspace tasks found";
+
+#[cfg(test)]
+fn dashboard_logo_size_for_test() -> f32 {
+    DASHBOARD_LOGO_SIZE
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DashboardRecentFile {
@@ -207,7 +216,7 @@ impl KuroyaApp {
             ui.add_space(left_pad);
             ui.vertical(|ui| {
                 ui.set_width(content_width);
-                render_dashboard_title(ui);
+                render_dashboard_title(ui, &mut self.dashboard_logo_texture);
                 ui.add_space(22.0);
                 self.render_dashboard_actions(ui, content_width);
                 ui.add_space(22.0);
@@ -877,9 +886,9 @@ fn dashboard_recent_candidate_scan_limit(limit: usize, candidate_count: usize) -
         .min(candidate_count)
 }
 
-fn render_dashboard_title(ui: &mut egui::Ui) {
+fn render_dashboard_title(ui: &mut egui::Ui, logo_texture: &mut Option<TextureHandle>) {
     ui.horizontal(|ui| {
-        render_brand_mark(ui);
+        render_brand_mark(ui, logo_texture);
         ui.add_space(12.0);
         ui.vertical(|ui| {
             ui.add_space(1.0);
@@ -893,22 +902,42 @@ fn render_dashboard_title(ui: &mut egui::Ui) {
     });
 }
 
-fn render_brand_mark(ui: &mut egui::Ui) {
-    let (rect, response) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
-    let visuals = ui.visuals();
-    let fill = blend_color(
-        visuals.widgets.inactive.weak_bg_fill,
-        visuals.selection.bg_fill,
-        0.24,
-    );
-    let stroke = Stroke::new(1.0, blend_color(fill, visuals.text_color(), 0.22));
-    ui.painter().rect_filled(rect, 8.0, fill);
-    ui.painter()
-        .rect_stroke(rect, 8.0, stroke, StrokeKind::Inside);
+fn render_brand_mark(ui: &mut egui::Ui, logo_texture: &mut Option<TextureHandle>) {
+    if logo_texture.is_none() {
+        *logo_texture = load_dashboard_logo_texture(ui.ctx());
+    }
 
-    let icon_rect = Rect::from_center_size(rect.center(), vec2(28.0, 28.0));
-    draw_icon(ui, icon_rect, IconKind::Code, visuals.text_color());
-    response.on_hover_text("Kuroya");
+    if let Some(texture) = logo_texture.as_ref() {
+        ui.add(
+            egui::Image::from_texture(texture)
+                .fit_to_exact_size(vec2(DASHBOARD_LOGO_SIZE, DASHBOARD_LOGO_SIZE))
+                .alt_text("Kuroya logo"),
+        )
+        .on_hover_text("Kuroya");
+    } else {
+        ui.allocate_exact_size(
+            vec2(DASHBOARD_LOGO_SIZE, DASHBOARD_LOGO_SIZE),
+            Sense::hover(),
+        );
+    }
+}
+
+fn load_dashboard_logo_texture(ctx: &egui::Context) -> Option<TextureHandle> {
+    let image = dashboard_logo_color_image()?;
+
+    Some(ctx.load_texture("kuroya-dashboard-logo-mark", image, TextureOptions::LINEAR))
+}
+
+fn dashboard_logo_color_image() -> Option<ColorImage> {
+    let decoded =
+        image::load_from_memory_with_format(DASHBOARD_LOGO_BYTES, ImageFormat::Png).ok()?;
+    let rgba = decoded.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    let pixels = rgba.into_raw();
+    Some(ColorImage::from_rgba_unmultiplied(
+        [usize::try_from(width).ok()?, usize::try_from(height).ok()?],
+        &pixels,
+    ))
 }
 
 fn dashboard_action(

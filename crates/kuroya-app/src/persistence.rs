@@ -1,7 +1,7 @@
 use crate::native_paths::normalize_native_path;
-use crate::persistence_storage::{
-    app_state_dir, app_state_path, atomic_write, read_file_bytes_with_limit,
-};
+#[cfg(not(test))]
+use crate::persistence_storage::app_state_path;
+use crate::persistence_storage::{app_state_dir, atomic_write, read_file_bytes_with_limit};
 use crate::workspace_trust::trusted_workspace_paths_match;
 
 pub(crate) use crate::persistence_models::{
@@ -35,12 +35,44 @@ const EMPTY_STARTUP_WORKSPACE_DIR_NAME: &str = "empty-workspace";
 
 impl AppState {
     pub fn load() -> anyhow::Result<Self> {
-        load_app_state_from_path(&app_state_path())
+        #[cfg(test)]
+        {
+            load_app_state_from_path(&test_app_state_path())
+        }
+        #[cfg(not(test))]
+        {
+            load_app_state_from_path(&app_state_path())
+        }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
-        save_app_state_to_path(&app_state_path(), self)
+        #[cfg(test)]
+        {
+            self.save_to_path(&test_app_state_path())
+        }
+        #[cfg(not(test))]
+        {
+            self.save_to_path(&app_state_path())
+        }
     }
+
+    pub(crate) fn save_to_path(&self, path: &Path) -> anyhow::Result<()> {
+        save_app_state_to_path(path, self)
+    }
+}
+
+#[cfg(test)]
+fn test_app_state_path() -> PathBuf {
+    let thread_id = format!("{:?}", std::thread::current().id())
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>();
+    std::env::temp_dir()
+        .join(format!(
+            "kuroya-app-state-test-{}-{thread_id}",
+            std::process::id()
+        ))
+        .join("state.json")
 }
 
 pub fn normalize_recent_projects(projects: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
@@ -112,6 +144,10 @@ fn load_app_state_from_path(path: &Path) -> anyhow::Result<AppState> {
     };
     state.recent_projects = normalize_recent_projects(state.recent_projects);
     state.trusted_workspaces = normalize_trusted_workspaces(state.trusted_workspaces);
+    if let Some(vim) = &mut state.vim {
+        vim.sanitize();
+        crate::editor_vim_key_events::sanitize_vim_settings_for_runtime(vim);
+    }
     Ok(state)
 }
 
@@ -123,6 +159,11 @@ fn save_app_state_to_path(path: &Path, state: &AppState) -> anyhow::Result<()> {
         recent_projects: normalize_recent_projects(state.recent_projects.clone()),
         trusted_workspaces: normalize_trusted_workspaces(state.trusted_workspaces.clone()),
         vim_keybindings: state.vim_keybindings,
+        vim: state.vim.clone().map(|mut vim| {
+            vim.sanitize();
+            crate::editor_vim_key_events::sanitize_vim_settings_for_runtime(&mut vim);
+            vim
+        }),
     };
     let bytes = serde_json::to_vec_pretty(&state)?;
     atomic_write(path, &bytes)?;

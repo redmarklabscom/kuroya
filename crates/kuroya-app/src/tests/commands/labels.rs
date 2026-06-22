@@ -57,6 +57,7 @@ fn command_label_covers_settings_commands() {
         command_label(&Command::ToggleStickyScroll),
         "Toggle Sticky Scroll"
     );
+    assert_eq!(command_label(&Command::ToggleVimMode), "Toggle Vim Mode");
     assert_eq!(
         command_label(&Command::ReopenClosedFile),
         "Reopen Closed File"

@@ -1,7 +1,9 @@
 use crate::{
     KuroyaApp,
     file_runtime::loaded_buffer_path_matches_request,
-    image_preview::{ImagePreviewState, LoadedImagePreview},
+    image_preview::{
+        ImagePreviewState, LoadedImagePreview, enforce_image_preview_retained_byte_cap,
+    },
     path_display::display_path_label_cow,
     persistence::{BufferHistoryState, BufferViewState, PaneBufferViewState},
     transient_state::FileJump,
@@ -105,6 +107,8 @@ impl KuroyaApp {
             }
             self.apply_existing_loaded_file(&path, elapsed, activate, existing_id, targets);
             self.status = format!("Opened {} as image preview", display_path_label_cow(&path));
+            let keep_ids = self.active.into_iter().chain(std::iter::once(existing_id));
+            enforce_image_preview_retained_byte_cap(&mut self.image_preview_buffers, keep_ids);
             return;
         }
 
@@ -122,6 +126,8 @@ impl KuroyaApp {
             self.image_preview_buffers
                 .insert(id, ImagePreviewState::from_loaded(preview));
             self.status = format!("Opened {} as image preview", display_path_label_cow(&path));
+            let keep_ids = self.active.into_iter().chain(std::iter::once(id));
+            enforce_image_preview_retained_byte_cap(&mut self.image_preview_buffers, keep_ids);
         }
     }
 

@@ -63,12 +63,14 @@ impl KuroyaApp {
             self.mark_buffer_changed_on_disk(*id);
         }
 
-        self.status = file_watcher_status(
+        if let Some(status) = file_watcher_status(
             drain.overflowed,
             open_buffer_paths_added,
             watched.project_paths.len(),
             dirty_changes.len(),
-        );
+        ) {
+            self.status = status;
+        }
         if watched.workspace_refresh_needed || drain.overflowed {
             self.schedule_workspace_refresh();
         }
@@ -81,27 +83,27 @@ fn file_watcher_status(
     open_buffer_paths_added: usize,
     project_changes: usize,
     dirty_changes: usize,
-) -> String {
+) -> Option<String> {
     if overflowed {
-        return format!(
+        return Some(format!(
             "Filesystem watcher missed changes; refreshing workspace and checking {}",
             count_label(
                 open_buffer_paths_added,
                 "open buffer path",
                 "open buffer paths"
             )
-        );
+        ));
+    }
+
+    if dirty_changes == 0 {
+        return None;
     }
 
     let changes = count_label(project_changes, "filesystem change", "filesystem changes");
-    if dirty_changes == 0 {
-        format!("{changes} detected")
-    } else {
-        format!(
-            "{changes} detected; {} changed on disk",
-            count_label(dirty_changes, "dirty buffer", "dirty buffers")
-        )
-    }
+    Some(format!(
+        "{changes} detected; {} changed on disk",
+        count_label(dirty_changes, "dirty buffer", "dirty buffers")
+    ))
 }
 
 fn include_open_buffer_paths(
@@ -311,29 +313,29 @@ mod tests {
 
     #[test]
     fn file_watcher_status_uses_count_labels() {
-        assert_eq!(
-            file_watcher_status(false, 0, 1, 0),
-            "1 filesystem change detected"
-        );
-        assert_eq!(
-            file_watcher_status(false, 0, 2, 0),
-            "2 filesystem changes detected"
-        );
+        assert_eq!(file_watcher_status(false, 0, 1, 0), None);
+        assert_eq!(file_watcher_status(false, 0, 2, 0), None);
         assert_eq!(
             file_watcher_status(false, 0, 1, 1),
-            "1 filesystem change detected; 1 dirty buffer changed on disk"
+            Some("1 filesystem change detected; 1 dirty buffer changed on disk".to_owned())
         );
         assert_eq!(
             file_watcher_status(false, 0, 2, 2),
-            "2 filesystem changes detected; 2 dirty buffers changed on disk"
+            Some("2 filesystem changes detected; 2 dirty buffers changed on disk".to_owned())
         );
         assert_eq!(
             file_watcher_status(true, 1, 0, 0),
-            "Filesystem watcher missed changes; refreshing workspace and checking 1 open buffer path"
+            Some(
+                "Filesystem watcher missed changes; refreshing workspace and checking 1 open buffer path"
+                    .to_owned()
+            )
         );
         assert_eq!(
             file_watcher_status(true, 2, 0, 0),
-            "Filesystem watcher missed changes; refreshing workspace and checking 2 open buffer paths"
+            Some(
+                "Filesystem watcher missed changes; refreshing workspace and checking 2 open buffer paths"
+                    .to_owned()
+            )
         );
     }
 }

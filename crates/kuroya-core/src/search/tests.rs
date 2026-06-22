@@ -259,9 +259,9 @@ fn cancellable_search_index_build_checks_between_files() {
 }
 
 #[test]
-fn cancellable_project_search_checks_while_building_index() {
+fn cancellable_project_search_checks_before_streaming_files() {
     let root = search_fixture(
-        "cancel-project-search-index-build",
+        "cancel-project-search-before-streaming",
         &[
             ("src/one.rs", "needle\n"),
             ("src/two.rs", "needle\n"),
@@ -286,6 +286,83 @@ fn cancellable_project_search_checks_while_building_index() {
 
     assert!(result.is_none());
     assert_eq!(cancellation_checks.get(), 5);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_search_progress_reports_chunked_deltas() {
+    let files = (0..(SEARCH_FILE_CHUNK_SIZE + 1))
+        .map(|index| {
+            (
+                format!("src/file_{index:03}.rs"),
+                format!("fn file_{index}() {{ let needle = {index}; }}\n"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let borrowed_files = files
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect::<Vec<_>>();
+    let root = search_fixture("progress-chunked-deltas", &borrowed_files);
+    let index = ProjectIndex::rebuild(&root, 400_000);
+    let mut progress_events = Vec::new();
+
+    let result = search_project_with_cancel_and_progress(
+        &index,
+        &SearchOptions {
+            query: "needle".to_owned(),
+            max_results: SEARCH_FILE_CHUNK_SIZE + 1,
+            ..SearchOptions::default()
+        },
+        || false,
+        |progress| progress_events.push(progress),
+    )
+    .expect("search should finish");
+
+    assert!(progress_events.len() >= 2);
+    assert_eq!(result.matches.len(), SEARCH_FILE_CHUNK_SIZE + 1);
+    assert_eq!(
+        progress_events
+            .iter()
+            .map(|progress| progress.matches.len())
+            .sum::<usize>(),
+        result.matches.len()
+    );
+    assert_eq!(
+        progress_events
+            .iter()
+            .map(|progress| progress.stats.searched_files)
+            .sum::<usize>(),
+        result.stats.searched_files
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cancellable_project_search_checks_inside_streamed_files() {
+    let text = (0..512)
+        .map(|line| format!("haystack {line}\n"))
+        .collect::<String>();
+    let root = search_fixture("cancel-inside-streamed-file", &[("src/lib.rs", &text)]);
+    let index = ProjectIndex::rebuild(&root, 40_000);
+    let cancellation_checks = Cell::new(0usize);
+
+    let result = search_project_with_cancel(
+        &index,
+        &SearchOptions {
+            query: "needle".to_owned(),
+            max_results: 10_000,
+            ..SearchOptions::default()
+        },
+        || {
+            let next = cancellation_checks.get().saturating_add(1);
+            cancellation_checks.set(next);
+            next > 8
+        },
+    );
+
+    assert!(result.is_none());
+    assert!(cancellation_checks.get() > 8);
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -7,6 +7,7 @@
 /.kuroya/
 /.tools/
 /workspace/.kuroya/
+/crates/kuroya-app/workspace/
 **/.kuroya/
 **/*.tmp.*
 /created.md

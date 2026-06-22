@@ -31,7 +31,14 @@ tokio = { version = "1.48", features = ["fs", "io-util", "macros", "process", "r
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24.2"
 vt100 = "0.16.2"
+wasmi = { version = "0.46.0", default-features = false, features = ["std"] }
 wgpu = { version = "27.0.1", default-features = false, features = ["std", "wgsl", "dx12", "vulkan", "metal", "gles"] }
 
 [build-dependencies]
 winresource = "0.1.31"
+
+[package.metadata.cargo-machete]
+ignored = ["winresource"]
+
+[dev-dependencies]
+wat = "1.252.0"

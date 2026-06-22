@@ -1,5 +1,6 @@
 use super::{
     TERMINAL_DEFAULT_DISPLAY_LABEL, TerminalCommandStatus, TerminalPane, terminal_input_id,
+    terminal_rename_input_id, terminal_search_input_id,
 };
 use crate::{
     popup_buttons::{PopupButtonKind, popup_button},
@@ -56,14 +57,6 @@ pub(super) use labels::{
 use labels::{
     terminal_display_label, terminal_path_label, terminal_session_label_from_display_label,
     terminal_session_sequence_title, terminal_tab_color_from_setting, terminal_template_path,
-};
-#[cfg(test)]
-#[allow(unused_imports)]
-use layout::{
-    TERMINAL_MAX_LAYOUT_POINTS, TERMINAL_PATH_LINK_SCAN_MAX_COLUMNS,
-    TERMINAL_SPLIT_SEPARATOR_WIDTH, terminal_cell_axis_index, terminal_cell_rect,
-    terminal_clamped_axis_position, terminal_normalized_rect, terminal_positive_layout_value,
-    terminal_visible_cell_count,
 };
 use layout::{
     bounded_terminal_layout_size, bounded_terminal_layout_value, terminal_cell_position_at_pointer,
@@ -199,7 +192,15 @@ impl TerminalPane {
                             &label_context,
                         );
                     }
-                    if terminal_action_button(ui, IconKind::Plus, "New", "New terminal").clicked() {
+                    if terminal_action_button_enabled(
+                        ui,
+                        self.can_open_session(),
+                        IconKind::Plus,
+                        "New",
+                        "New terminal",
+                    )
+                    .clicked()
+                    {
                         self.open_new_session();
                     }
                     let show_actions = self.terminal_action_buttons_visible();
@@ -207,7 +208,7 @@ impl TerminalPane {
                     if show_actions
                         && terminal_action_button_enabled(
                             ui,
-                            has_active_session,
+                            has_active_session && self.can_open_session(),
                             IconKind::Panes,
                             "Split",
                             "Split terminal",
@@ -296,6 +297,7 @@ impl TerminalPane {
                     icon_label(ui, IconKind::Search, accent, "Terminal search");
                     let search_response = ui.add(
                         TextEdit::singleline(&mut self.search_query)
+                            .id(terminal_search_input_id())
                             .desired_width(280.0)
                             .hint_text("Search terminal"),
                     );
@@ -642,7 +644,13 @@ impl TerminalPane {
         }
 
         response.context_menu(|ui| {
-            if ui.button("Split Terminal Right").clicked() {
+            if ui
+                .add_enabled(
+                    self.can_open_session(),
+                    egui::Button::new("Split Terminal Right"),
+                )
+                .clicked()
+            {
                 self.set_active_session(left_index);
                 self.split_active_session();
                 ui.close();
@@ -697,16 +705,16 @@ impl TerminalPane {
         command_bus: &mut CommandBus,
     ) {
         let desired_size = bounded_terminal_layout_size(desired_size);
-        self.resize_session_to_fit(index, desired_size.x, desired_size.y);
         let session_id = self.sessions.get(index).map(|session| session.id);
         let (rect, allocated_response) = ui.allocate_exact_size(desired_size, Sense::hover());
+        let inner = terminal_content_rect(rect);
+        self.resize_session_to_fit(index, inner.width(), inner.height());
         let response = session_id
             .map(|session_id| {
                 ui.interact(rect, terminal_input_id(session_id), Sense::click_and_drag())
             })
             .unwrap_or(allocated_response);
         let response = response.on_hover_text(terminal_input_hover_text());
-        let inner = terminal_content_rect(rect);
         let font_size = terminal_safe_font_size(self.font_size);
         let (cell_width, cell_height) =
             terminal_safe_cell_size(font_size, self.line_height, self.letter_spacing);
@@ -1053,12 +1061,18 @@ impl TerminalPane {
 
         ui.separator();
 
-        if ui.button("New Terminal").clicked() {
+        if ui
+            .add_enabled(self.can_open_session(), egui::Button::new("New Terminal"))
+            .clicked()
+        {
             self.open_new_session();
             ui.close();
         }
         if ui
-            .add_enabled(has_session, egui::Button::new("Split Terminal Right"))
+            .add_enabled(
+                has_session && self.can_open_session(),
+                egui::Button::new("Split Terminal Right"),
+            )
             .clicked()
         {
             self.split_active_session();
@@ -1123,46 +1137,43 @@ impl TerminalPane {
         response: &Response,
         paste_only: bool,
     ) {
-        ui.input(|input| {
-            for event in &input.events {
-                match event {
-                    Event::Text(text) | Event::Ime(ImeEvent::Commit(text))
-                        if !paste_only && !text.is_empty() =>
-                    {
-                        self.set_active_session(index);
-                        self.send_input(text);
-                    }
-                    Event::Paste(text) if !text.is_empty() => {
-                        self.paste_text(index, text.clone());
-                    }
-                    Event::Key {
-                        key,
-                        pressed: true,
-                        modifiers,
-                        ..
-                    } if !paste_only => {
-                        if terminal_copy_shortcut(*key, *modifiers) {
-                            self.copy_terminal_text(ui, index);
-                        } else if let Some(delta) = terminal_scroll_key_delta(*key, *modifiers) {
-                            self.scroll_terminal(index, delta);
-                        } else if let Some(input) = terminal_key_input(*key, *modifiers) {
-                            self.set_active_session(index);
-                            self.send_input(input);
-                        }
-                    }
-                    Event::MouseWheel {
-                        unit,
-                        delta,
-                        modifiers,
-                    } if response.hovered() => {
-                        self.handle_terminal_mouse_wheel(
-                            ui, index, response, *unit, *delta, *modifiers,
-                        );
-                    }
-                    _ => {}
+        let events = ui.input(|input| input.events.clone());
+        for event in events {
+            match event {
+                Event::Text(text) | Event::Ime(ImeEvent::Commit(text))
+                    if !paste_only && !text.is_empty() =>
+                {
+                    self.set_active_session(index);
+                    self.send_input(text);
                 }
+                Event::Paste(text) if !text.is_empty() => {
+                    self.paste_text(index, text);
+                }
+                Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if !paste_only => {
+                    if terminal_copy_shortcut(key, modifiers) {
+                        self.copy_terminal_text(ui, index);
+                    } else if let Some(delta) = terminal_scroll_key_delta(key, modifiers) {
+                        self.scroll_terminal(index, delta);
+                    } else if let Some(input) = terminal_key_input(key, modifiers) {
+                        self.set_active_session(index);
+                        self.send_input(input);
+                    }
+                }
+                Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                } if response.hovered() => {
+                    self.handle_terminal_mouse_wheel(ui, index, response, unit, delta, modifiers);
+                }
+                _ => {}
             }
-        });
+        }
     }
 
     fn copy_terminal_text(&self, ui: &egui::Ui, index: usize) -> bool {
@@ -1174,20 +1185,17 @@ impl TerminalPane {
     }
 
     fn handle_terminal_scroll(&mut self, ui: &egui::Ui, index: usize, response: &Response) {
-        ui.input(|input| {
-            for event in &input.events {
-                if let Event::MouseWheel {
-                    unit,
-                    delta,
-                    modifiers,
-                } = event
-                {
-                    self.handle_terminal_mouse_wheel(
-                        ui, index, response, *unit, *delta, *modifiers,
-                    );
-                }
+        let events = ui.input(|input| input.events.clone());
+        for event in events {
+            if let Event::MouseWheel {
+                unit,
+                delta,
+                modifiers,
+            } = event
+            {
+                self.handle_terminal_mouse_wheel(ui, index, response, unit, delta, modifiers);
             }
-        });
+        }
     }
 
     fn handle_terminal_mouse_wheel(
@@ -1466,6 +1474,7 @@ impl TerminalPane {
                 ui.label(RichText::new(format!("Terminal {session_id}")).strong());
                 let response = ui.add(
                     TextEdit::singleline(&mut self.rename_session_input)
+                        .id(terminal_rename_input_id(session_id))
                         .desired_width(f32::INFINITY)
                         .hint_text(TERMINAL_DEFAULT_DISPLAY_LABEL),
                 );

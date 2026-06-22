@@ -66,10 +66,10 @@ pub(crate) fn paint_editor_row(
     if has_cursor_on_line
         && line_highlight_visible(row.render_line_highlight_only_when_focus, row.focused)
     {
-        paint_line_highlight(painter, rect, row);
+        paint_line_highlight(painter, rect, row, ui.visuals());
     }
     if folded_region_highlight_visible(row.folding_highlight, folded_here.is_some()) {
-        paint_folded_region_highlight(painter, rect);
+        paint_folded_region_highlight(painter, rect, row.weak_text_color);
     }
     paint_merge_conflict_background(painter, rect, line_idx, row);
     paint_diff_move_decoration(painter, rect, line_number, row);
@@ -84,10 +84,17 @@ pub(crate) fn paint_editor_row(
     );
 
     let visual_text_width = text_metrics.visual_width;
-    paint_row_highlights(painter, rect, &snapshot.char_range, text, row);
+    paint_row_highlights(
+        painter,
+        rect,
+        &snapshot.char_range,
+        line_end_visible,
+        text,
+        row,
+    );
     paint_diff_empty_decoration(painter, rect, row, text);
-    paint_column_ruler(painter, rect, row);
-    paint_indent_guides(painter, rect, text, row);
+    paint_column_ruler(painter, rect, row, ui.visuals());
+    paint_indent_guides(painter, rect, text, row, ui.visuals());
 
     paint_row_gutter(
         ui,
@@ -114,7 +121,7 @@ pub(crate) fn paint_editor_row(
     let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
     let text_pos = pos2(rect.left() + row.gutter_width, rect.top() + 3.0);
     paint_bracket_pair_guides(painter, line_idx, text, text_pos, rect, row);
-    painter.galley(text_pos, galley, Color32::from_rgb(222, 226, 233));
+    painter.galley(text_pos, galley, ui.visuals().text_color());
     paint_color_decorators(painter, rect, text_pos, text, row, row_hovered);
     paint_row_deprecated_diagnostic_tags(painter, rect, &snapshot.char_range, text, row);
     paint_control_character_markers(ui, painter, rect, text_pos, text, &text_metrics, row);
@@ -390,21 +397,31 @@ fn injected_language_fill(language: LanguageId) -> Color32 {
         LanguageId::Json | LanguageId::Toml | LanguageId::Yaml => {
             Color32::from_rgba_premultiplied(91, 141, 239, 30)
         }
-        LanguageId::Markdown | LanguageId::Html => {
-            Color32::from_rgba_premultiplied(126, 168, 97, 30)
-        }
+        LanguageId::Markdown
+        | LanguageId::Html
+        | LanguageId::Xml
+        | LanguageId::Vue
+        | LanguageId::Svelte => Color32::from_rgba_premultiplied(126, 168, 97, 30),
         LanguageId::TypeScript | LanguageId::JavaScript | LanguageId::Css => {
             Color32::from_rgba_premultiplied(208, 190, 86, 28)
         }
-        LanguageId::Python | LanguageId::PowerShell | LanguageId::Shell => {
-            Color32::from_rgba_premultiplied(112, 155, 229, 28)
-        }
+        LanguageId::Python
+        | LanguageId::PowerShell
+        | LanguageId::Ruby
+        | LanguageId::Lua
+        | LanguageId::Shell
+        | LanguageId::Dockerfile
+        | LanguageId::Terraform => Color32::from_rgba_premultiplied(112, 155, 229, 28),
         LanguageId::Rust
         | LanguageId::Go
         | LanguageId::Java
         | LanguageId::C
         | LanguageId::Cpp
         | LanguageId::CSharp
+        | LanguageId::Php
+        | LanguageId::Dart
+        | LanguageId::Kotlin
+        | LanguageId::Swift
         | LanguageId::Diff
         | LanguageId::PlainText => Color32::from_rgba_premultiplied(126, 136, 150, 24),
     }
@@ -478,7 +495,7 @@ fn paint_git_blame_decoration(
         egui::Align2::LEFT_TOP,
         label,
         FontId::new((row.font_size * 0.86).max(8.0), FontFamily::Monospace),
-        Color32::from_rgb(126, 136, 150),
+        row.weak_text_color,
     );
 }
 
@@ -594,16 +611,21 @@ pub(crate) fn folded_region_highlight_visible(folding_highlight: bool, folded_he
     folding_highlight && folded_here
 }
 
-fn paint_folded_region_highlight(painter: &egui::Painter, rect: egui::Rect) {
-    painter.rect_filled(rect, 0.0, folded_region_highlight_fill());
+fn paint_folded_region_highlight(painter: &egui::Painter, rect: egui::Rect, base: Color32) {
+    painter.rect_filled(rect, 0.0, folded_region_highlight_fill(base));
 }
 
-pub(crate) fn folded_region_highlight_fill() -> Color32 {
-    Color32::from_rgba_premultiplied(70, 83, 108, 44)
+pub(crate) fn folded_region_highlight_fill(base: Color32) -> Color32 {
+    Color32::from_rgba_premultiplied(base.r(), base.g(), base.b(), 44)
 }
 
-fn paint_line_highlight(painter: &egui::Painter, rect: egui::Rect, row: &EditorRowContext<'_>) {
-    let color = Color32::from_rgb(28, 32, 39);
+fn paint_line_highlight(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    row: &EditorRowContext<'_>,
+    visuals: &egui::Visuals,
+) {
+    let color = line_highlight_fill(visuals);
     match row.render_line_highlight {
         EditorRenderLineHighlight::None => {}
         EditorRenderLineHighlight::Gutter => {
@@ -632,7 +654,16 @@ fn paint_line_highlight(painter: &egui::Painter, rect: egui::Rect, row: &EditorR
     }
 }
 
-fn paint_column_ruler(painter: &egui::Painter, rect: egui::Rect, row: &EditorRowContext<'_>) {
+fn line_highlight_fill(visuals: &egui::Visuals) -> Color32 {
+    visuals.widgets.active.weak_bg_fill
+}
+
+fn paint_column_ruler(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    row: &EditorRowContext<'_>,
+    visuals: &egui::Visuals,
+) {
     if row.ruler_column == 0 {
         return;
     }
@@ -644,8 +675,12 @@ fn paint_column_ruler(painter: &egui::Painter, rect: egui::Rect, row: &EditorRow
 
     painter.line_segment(
         [pos2(x, rect.top()), pos2(x, rect.bottom())],
-        egui::Stroke::new(1.0, Color32::from_rgb(43, 48, 57)),
+        egui::Stroke::new(1.0, column_ruler_color(visuals)),
     );
+}
+
+fn column_ruler_color(visuals: &egui::Visuals) -> Color32 {
+    visuals.widgets.noninteractive.bg_stroke.color
 }
 
 fn paint_indent_guides(
@@ -653,6 +688,7 @@ fn paint_indent_guides(
     rect: egui::Rect,
     text: &str,
     row: &EditorRowContext<'_>,
+    visuals: &egui::Visuals,
 ) {
     if !row.indent_guides {
         return;
@@ -665,19 +701,21 @@ fn paint_indent_guides(
             return false;
         }
         let is_active = active_column == Some(column);
+        let color = indent_guide_color(visuals, is_active);
         painter.line_segment(
             [pos2(x, rect.top() + 2.0), pos2(x, rect.bottom() - 2.0)],
-            egui::Stroke::new(
-                if is_active { 1.5 } else { 1.0 },
-                if is_active {
-                    Color32::from_rgb(91, 141, 239)
-                } else {
-                    Color32::from_rgb(39, 44, 52)
-                },
-            ),
+            egui::Stroke::new(if is_active { 1.5 } else { 1.0 }, color),
         );
         true
     });
+}
+
+fn indent_guide_color(visuals: &egui::Visuals, active: bool) -> Color32 {
+    if active {
+        visuals.selection.stroke.color
+    } else {
+        visuals.widgets.inactive.bg_stroke.color
+    }
 }
 
 pub(crate) fn active_indent_guide_column_for_buffer(

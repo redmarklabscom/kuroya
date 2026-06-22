@@ -34,7 +34,7 @@ impl KuroyaApp {
 
         let char_width = measured_monospace_char_width(ui, self.settings.font_size);
         let is_focused = self.focused_pane == Some(pane_id);
-        let accepts_text_input = self.editor_accepts_text_input(pane_id);
+        let accepts_text_input = self.editor_accepts_text_input(ui.ctx(), pane_id);
         let data = self.prepare_editor_pane_data(
             active_id,
             buffer_index,

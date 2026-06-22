@@ -1,7 +1,11 @@
 use crate::large_file_mode::{
     buffer_uses_large_file_mode, buffer_uses_large_file_performance_mode,
 };
-use kuroya_core::{BufferId, TextBuffer, server_for_language};
+use kuroya_core::{
+    BufferId, LanguageId, LspServerConfig, PluginLanguageRegistry, TextBuffer,
+    lsp_language_id_for_path, server_config_for_language,
+};
+use std::borrow::Cow;
 use std::{
     collections::{HashMap, HashSet},
     io::Read,
@@ -61,6 +65,8 @@ pub(crate) fn due_language_sync_ids(
 
 pub(crate) fn lsp_lifecycle_target_for_buffer(
     buffer: &TextBuffer,
+    configs: &[LspServerConfig],
+    plugin_languages: &PluginLanguageRegistry,
     lossy_buffers: &HashSet<BufferId>,
     binary_buffers: &HashSet<BufferId>,
 ) -> Option<(String, PathBuf)> {
@@ -69,19 +75,81 @@ pub(crate) fn lsp_lifecycle_target_for_buffer(
         return None;
     }
     let path = buffer.path()?.clone();
-    let key = server_for_language(buffer.language())?.language;
+    let (config, _) = lsp_server_config_for_buffer(configs, plugin_languages, buffer)?;
+    let key = config.language.clone();
     Some((key, path))
 }
 
 pub(crate) fn lsp_lifecycle_targets_for_buffers(
     buffers: &[TextBuffer],
+    configs: &[LspServerConfig],
+    plugin_languages: &PluginLanguageRegistry,
     lossy_buffers: &HashSet<BufferId>,
     binary_buffers: &HashSet<BufferId>,
 ) -> Vec<(String, PathBuf)> {
     buffers
         .iter()
-        .filter_map(|buffer| lsp_lifecycle_target_for_buffer(buffer, lossy_buffers, binary_buffers))
+        .filter_map(|buffer| {
+            lsp_lifecycle_target_for_buffer(
+                buffer,
+                configs,
+                plugin_languages,
+                lossy_buffers,
+                binary_buffers,
+            )
+        })
         .collect()
+}
+
+pub(crate) fn lsp_server_config_for_buffer<'a>(
+    configs: &'a [LspServerConfig],
+    plugin_languages: &'a PluginLanguageRegistry,
+    buffer: &'a TextBuffer,
+) -> Option<(&'a LspServerConfig, Cow<'a, str>)> {
+    let language = lsp_language_id_for_buffer(configs, plugin_languages, buffer);
+    let config = configs
+        .iter()
+        .find(|config| config.language == language.as_ref())
+        .or_else(|| server_config_for_language(configs, buffer.language()))?;
+    Some((config, language))
+}
+
+pub(crate) fn lsp_language_id_for_buffer<'a>(
+    configs: &'a [LspServerConfig],
+    plugin_languages: &'a PluginLanguageRegistry,
+    buffer: &'a TextBuffer,
+) -> Cow<'a, str> {
+    if let Some(path) = buffer.path() {
+        if let Some(config) = custom_lsp_server_config_for_path(configs, path) {
+            return Cow::Borrowed(config.language.as_str());
+        }
+        if buffer.language() == LanguageId::PlainText
+            && let Some(language) = plugin_languages.language_for_path(path)
+        {
+            return Cow::Borrowed(language.language_id.as_str());
+        }
+    }
+
+    Cow::Borrowed(lsp_language_id_for_path(
+        buffer.language(),
+        buffer.path().map(PathBuf::as_path),
+    ))
+}
+
+fn custom_lsp_server_config_for_path<'a>(
+    configs: &'a [LspServerConfig],
+    path: &Path,
+) -> Option<&'a LspServerConfig> {
+    let extension = path.extension()?.to_str()?.trim_start_matches('.');
+    if extension.is_empty() {
+        return None;
+    }
+    configs.iter().find(|config| {
+        config.extensions.iter().any(|configured| {
+            let configured = configured.trim_start_matches('.');
+            !configured.is_empty() && configured.eq_ignore_ascii_case(extension)
+        })
+    })
 }
 
 pub(crate) fn open_lsp_workspace_edit_block_reason(

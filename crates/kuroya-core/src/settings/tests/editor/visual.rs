@@ -37,9 +37,6 @@ fn editor_visual_settings_parse_vs_code_style_values() {
              render_final_newline = \"dimmed\"\n\
              render_line_highlight = \"all\"\n\
              render_line_highlight_only_when_focus = true\n\
-             selection_highlight = false\n\
-             selection_highlight_max_length = 12\n\
-             selection_highlight_multiline = true\n\
              smart_select_select_leading_and_trailing_whitespace = false\n\
              smart_select_select_subwords = false\n\
              find_seed_search_string_from_selection = \"selection\"\n\
@@ -425,8 +422,6 @@ fn editor_visual_settings_parse_vs_code_style_values() {
              accept_suggestion_on_enter = false\n\
              accept_suggestion_on_tab = true\n\
              hover_enabled = false\n\
-             occurrences_highlight = \"multiFile\"\n\
-             occurrences_highlight_delay_ms = 175\n\
              lightbulb = \"on\"\n\
              render_validation_decorations = \"off\"\n\
              document_highlights_enabled = false\n\
@@ -510,9 +505,6 @@ fn editor_visual_settings_parse_vs_code_style_values() {
         EditorRenderLineHighlight::All
     );
     assert!(settings.render_line_highlight_only_when_focus);
-    assert!(!settings.selection_highlight);
-    assert_eq!(settings.selection_highlight_max_length, 12);
-    assert!(settings.selection_highlight_multiline);
     assert!(!settings.smart_select_select_leading_and_trailing_whitespace);
     assert!(!settings.smart_select_select_subwords);
     assert_eq!(
@@ -1103,11 +1095,6 @@ fn editor_visual_settings_parse_vs_code_style_values() {
     assert!(!settings.accept_suggestion_on_enter);
     assert!(settings.accept_suggestion_on_tab);
     assert!(!settings.hover_enabled);
-    assert_eq!(
-        settings.occurrences_highlight,
-        EditorOccurrencesHighlight::MultiFile
-    );
-    assert_eq!(settings.occurrences_highlight_delay_ms, 175);
     assert_eq!(settings.lightbulb, EditorLightbulbMode::On);
     assert_eq!(
         settings.render_validation_decorations,

@@ -32,6 +32,9 @@ impl KuroyaApp {
     }
 
     pub(crate) fn reset_open_workspace_state(&mut self) {
+        if self.has_keybinding_capture_in_progress() && !self.cancel_keybinding_capture() {
+            return;
+        }
         self.pending_workspace_switch = None;
         self.pending_exit = None;
         self.exit_confirmed = false;
@@ -47,7 +50,6 @@ impl KuroyaApp {
 
     fn reset_workspace_document_state(&mut self) {
         self.index = ProjectIndex::default();
-        self.project_search_index = Default::default();
         self.project_index_generation = 0;
         self.project_search_index_generation = 0;
         self.invalidate_workspace_index_requests();
@@ -66,7 +68,6 @@ impl KuroyaApp {
         self.diff_cache_pending.clear();
         self.merge_conflict_cache.clear();
         self.editor_bracket_overlay_cache.clear();
-        self.editor_match_highlight_cache.clear();
         self.minimap_line_length_cache.clear();
         self.minimap_section_header_cache.clear();
         self.line_render_protection_cache.clear();
@@ -298,14 +299,18 @@ mod tests {
     use crate::{
         app_startup_context::AppStartupContext,
         app_state::{PendingFileReload, QueuedFileReload},
+        commands::keybinding_chord_for_command,
+        keybinding_input::CapturedKeybinding,
+        keybindings_panel_actions::PendingKeybindingsPanelActions,
         lsp_workspace_symbol_ranking::WorkspaceSymbolQueryMemoryEntry,
         terminal::TerminalPane,
         transient_state::{PendingExit, PendingWorkspaceSwitch},
+        workspace_state::settings_path,
         workspace_tasks_runtime::RunningWorkspaceTask,
     };
     use kuroya_core::{
-        EditorMatchBrackets, EditorOccurrencesHighlight, EditorSettings, TextBuffer, Workspace,
-        WorkspaceTaskKind,
+        EditorMatchBrackets, EditorSettings, TextBuffer, Workspace, WorkspaceTaskKind,
+        keymap::KeyBinding,
     };
     use std::{
         path::PathBuf,
@@ -331,6 +336,70 @@ mod tests {
         app.reset_open_workspace_state();
 
         assert!(app.workspace_symbol_query_memory.is_empty());
+    }
+
+    #[test]
+    fn reset_open_workspace_state_cancels_pending_escape_keybinding_capture_before_resetting() {
+        let root = temp_root("workspace-reset-cancels-keybinding-capture");
+        let mut app = app_for_test(root.clone());
+        app.settings.keymap.bindings = vec![
+            KeyBinding {
+                chord: "Escape".to_owned(),
+                command: kuroya_core::Command::ToggleQuickOpen,
+            },
+            KeyBinding {
+                chord: "Ctrl+Z".to_owned(),
+                command: kuroya_core::Command::Undo,
+            },
+        ];
+        app.keybindings_open = true;
+        app.keybinding_capture_command = Some(kuroya_core::Command::Undo);
+
+        app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+            captured: Some(CapturedKeybinding::Escape),
+            ..PendingKeybindingsPanelActions::default()
+        });
+        assert_eq!(
+            app.keybinding_capture_command,
+            Some(kuroya_core::Command::Undo)
+        );
+        assert!(app.keybinding_escape_cancel.is_some());
+        assert_eq!(
+            keybinding_chord_for_command(
+                &app.settings.keymap.bindings,
+                &kuroya_core::Command::Undo
+            ),
+            Some("Ctrl+Z".to_owned())
+        );
+        assert_eq!(
+            keybinding_chord_for_command(
+                &app.settings.keymap.bindings,
+                &kuroya_core::Command::ToggleQuickOpen
+            ),
+            Some("Escape".to_owned())
+        );
+
+        app.reset_open_workspace_state();
+
+        assert!(!app.keybindings_open);
+        assert_eq!(app.keybinding_capture_command, None);
+        assert!(app.keybinding_escape_cancel.is_none());
+        assert_eq!(
+            keybinding_chord_for_command(
+                &app.settings.keymap.bindings,
+                &kuroya_core::Command::Undo
+            ),
+            Some("Ctrl+Z".to_owned())
+        );
+        assert_eq!(
+            keybinding_chord_for_command(
+                &app.settings.keymap.bindings,
+                &kuroya_core::Command::ToggleQuickOpen
+            ),
+            Some("Escape".to_owned())
+        );
+        assert!(!settings_path(&root).exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -536,28 +605,6 @@ mod tests {
         app.reset_open_workspace_state();
 
         assert!(!app.editor_bracket_overlay_cache.contains_buffer_for_test(7));
-    }
-
-    #[test]
-    fn reset_open_workspace_state_clears_editor_match_highlight_cache() {
-        let root = temp_root("match-highlight-reset");
-        let mut app = app_for_test(root.clone());
-        let mut buffer = TextBuffer::from_text(
-            7,
-            Some(root.join("src/main.rs")),
-            "alpha beta alpha\n".to_owned(),
-        );
-        buffer.set_single_cursor(2);
-
-        app.editor_match_highlight_cache
-            .occurrence_highlight_ranges(&buffer, EditorOccurrencesHighlight::SingleFile);
-        app.editor_match_highlight_cache
-            .selection_highlight_ranges(&buffer, true, 256, true);
-        assert!(app.editor_match_highlight_cache.contains_buffer_for_test(7));
-
-        app.reset_open_workspace_state();
-
-        assert!(!app.editor_match_highlight_cache.contains_buffer_for_test(7));
     }
 
     #[test]

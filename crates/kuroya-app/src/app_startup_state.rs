@@ -49,20 +49,25 @@ impl KuroyaApp {
             source_control_view_mode_from_setting(settings.scm_default_view_mode);
         let source_control_sort =
             source_control_sort_mode_from_setting(settings.scm_default_view_sort_key);
+        let app_state_vim_keybindings = settings.vim_keybindings;
+        let app_state_vim = settings.vim.clone();
 
         Self {
             runtime,
             tx,
             rx,
+            #[cfg(test)]
+            app_state_path_override: None,
             workspace,
             workspace_placeholder,
             workspace_event_generation: 0,
             index: ProjectIndex::default(),
-            project_search_index: Default::default(),
             project_search_index_generation: 0,
             command_bus: CommandBus::default(),
             shortcut_dispatch_cache: Default::default(),
             settings,
+            app_state_vim_keybindings,
+            app_state_vim,
             highlighter: SyntaxHighlighter::new(),
             syntax_tree_cache: TreeSitterSyntaxCache::default(),
             matcher: SkimMatcherV2::default(),
@@ -73,7 +78,6 @@ impl KuroyaApp {
             diff_cache_pending: HashMap::new(),
             merge_conflict_cache: HashMap::new(),
             editor_bracket_overlay_cache: Default::default(),
-            editor_match_highlight_cache: Default::default(),
             minimap_line_length_cache: Default::default(),
             minimap_section_header_cache: Default::default(),
             line_render_protection_cache: HashMap::new(),
@@ -87,6 +91,7 @@ impl KuroyaApp {
             lossy_decoded_buffers: HashSet::new(),
             binary_preview_buffers: HashSet::new(),
             image_preview_buffers: HashMap::new(),
+            dashboard_logo_texture: None,
             manual_read_only_buffers: HashSet::new(),
             explorer_expanded: HashSet::new(),
             explorer_revealed_path: None,
@@ -160,6 +165,7 @@ impl KuroyaApp {
             keybindings_query: String::new(),
             keybindings_selected: 0,
             keybinding_capture_command: None,
+            keybinding_escape_cancel: None,
             dirty_close_buffer: None,
             dirty_reload_buffer: None,
             save_conflict_buffer: None,
@@ -468,7 +474,6 @@ impl KuroyaApp {
             editor_vim_last_char_find: None,
             editor_vim_unnamed_register: None,
             editor_vim_last_change: None,
-            editor_defer_match_highlights_for_buffer: None,
             pending_language_sync: HashMap::new(),
             session_save_in_flight: None,
             queued_session_saves: HashMap::new(),

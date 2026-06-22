@@ -6,6 +6,7 @@ use crate::{
     },
     workspace_state::settings_path,
 };
+use kuroya_core::EditorSettings;
 use std::{fmt::Display, path::Path};
 
 mod draft;
@@ -16,6 +17,18 @@ use terminal::sync_terminal_settings;
 use validation::{SettingsPanelDraftValidation, validate_settings_panel_draft};
 
 impl KuroyaApp {
+    pub(super) fn settings_panel_default_candidate(&self) -> EditorSettings {
+        let defaults = EditorSettings::default();
+        let mut candidate = self.settings.clone();
+        draft::apply_settings_panel_draft_with_font_paths(
+            &mut candidate,
+            &defaults,
+            defaults.editor_font_path.clone(),
+            defaults.ui_font_path.clone(),
+        );
+        candidate
+    }
+
     pub(super) fn settings_panel_draft_validation(&self) -> SettingsPanelDraftValidation {
         validate_settings_panel_draft(
             &self.settings,
@@ -54,8 +67,12 @@ impl KuroyaApp {
             self.settings.editor_font_path.clone(),
             self.settings.ui_font_path.clone(),
         );
+        let previous_theme = (
+            self.settings.theme.clone(),
+            self.settings.active_custom_theme_path.clone(),
+        );
         let previous_read_only = self.settings.read_only;
-        let previous_vim_keybindings = self.settings.vim_keybindings;
+        let previous_vim_settings = (self.settings.vim_keybindings, self.settings.vim.clone());
         let previous_inline_annotations = (self.settings.code_lens, self.settings.inlay_hints);
         let previous_navigation_annotations = (
             self.settings.hover_enabled,
@@ -77,6 +94,11 @@ impl KuroyaApp {
         let previous_git_repository_scan_settings =
             GitRepositoryScanSettings::from_settings(&self.settings);
         let previous_diff_max_file_size_mb = self.settings.diff_max_file_size_mb;
+        let path = settings_path(&self.workspace.root);
+        if let Err(error) = next_settings.save(&path) {
+            self.status = settings_save_failed_status(error);
+            return;
+        }
 
         self.settings = next_settings;
         let terminal_shell_profile_changed = previous_terminal_shell_profile
@@ -104,10 +126,19 @@ impl KuroyaApp {
         if previous_fonts != current_fonts {
             self.fonts_dirty = true;
         }
+        if previous_theme
+            != (
+                self.settings.theme.clone(),
+                self.settings.active_custom_theme_path.clone(),
+            )
+        {
+            self.theme_dirty = true;
+            self.theme_picker_selected = self.selected_theme_picker_index();
+        }
         if previous_read_only != self.settings.read_only {
             self.sync_global_read_only_buffers();
         }
-        if previous_vim_keybindings != self.settings.vim_keybindings {
+        if previous_vim_settings != (self.settings.vim_keybindings, self.settings.vim.clone()) {
             self.editor_vim_mode = crate::editor_vim_key_events::EditorVimMode::Normal;
             self.editor_vim_pending_key = None;
             self.editor_vim_last_char_find = None;
@@ -172,31 +203,23 @@ impl KuroyaApp {
             self.spawn_git_scan();
         }
 
-        let app_state_save_error = if previous_vim_keybindings != self.settings.vim_keybindings {
+        let app_state_save_error = if previous_vim_settings
+            != (self.settings.vim_keybindings, self.settings.vim.clone())
+        {
+            self.app_state_vim_keybindings = self.settings.vim_keybindings;
+            self.app_state_vim = self.settings.vim.clone();
             self.save_app_state().err()
         } else {
             None
         };
-
-        let path = settings_path(&self.workspace.root);
-        match self.settings.save(&path) {
-            Ok(()) => {
-                self.status = settings_save_success_status(
-                    &path,
-                    apply_note,
-                    terminal_shell_profile_changed,
-                    restarted_terminal_sessions,
-                );
-                if let Some(error) = app_state_save_error {
-                    push_app_preference_save_failed_status(&mut self.status, error);
-                }
-            }
-            Err(error) => {
-                self.status = settings_save_failed_status(error);
-                if let Some(error) = app_state_save_error {
-                    push_app_preference_save_failed_status(&mut self.status, error);
-                }
-            }
+        self.status = settings_save_success_status(
+            &path,
+            apply_note,
+            terminal_shell_profile_changed,
+            restarted_terminal_sessions,
+        );
+        if let Some(error) = app_state_save_error {
+            push_app_preference_save_failed_status(&mut self.status, error);
         }
     }
 }
@@ -277,7 +300,7 @@ fn settings_save_success_status(
 fn settings_save_failed_status(error: impl Display) -> String {
     let error = error.to_string();
     let error = display_error_label_cow(&error);
-    format!("Settings changed, but save failed: {}", error.as_ref())
+    format!("Could not save settings: {}", error.as_ref())
 }
 
 fn push_app_preference_save_failed_status(status: &mut String, error: impl Display) {
@@ -386,6 +409,88 @@ mod tests {
     }
 
     #[test]
+    fn apply_settings_panel_does_not_apply_or_save_vim_app_state_when_settings_save_fails() {
+        let root = temp_root("vim-app-state-after-settings-save-fail");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".kuroya"), "not a settings directory").unwrap();
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        let app_state_path = root.join("app-state.json");
+        app.app_state_path_override = Some(app_state_path.clone());
+
+        app.settings_panel_draft.vim_keybindings = true;
+        app.apply_settings_panel();
+
+        assert!(!app.settings.vim_keybindings);
+        assert!(app.settings_panel_draft.vim_keybindings);
+        assert!(app.status.starts_with("Could not save settings:"));
+        assert!(!app_state_path.exists());
+        app.save_app_state().unwrap();
+        let app_state = fs::read_to_string(&app_state_path).unwrap();
+        assert!(app_state.contains("\"vim_keybindings\": false"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_reports_vim_app_state_save_failure_after_settings_save() {
+        let root = temp_root("vim-app-state-save-fail-after-settings-save");
+        fs::create_dir_all(&root).unwrap();
+        let blocked_parent = root.join("blocked-app-state");
+        fs::write(&blocked_parent, "not a directory").unwrap();
+        let app_state_path = blocked_parent.join("state.json");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        app.app_state_path_override = Some(app_state_path.clone());
+
+        app.settings_panel_draft.vim_keybindings = true;
+        app.apply_settings_panel();
+
+        assert!(app.settings.vim_keybindings);
+        assert!(app.app_state_vim_keybindings);
+        let saved = fs::read_to_string(settings_path(&root)).unwrap();
+        assert!(saved.contains("vim_keybindings = true"));
+        assert!(
+            app.status
+                .starts_with("Saved settings; app preference save failed:")
+        );
+        assert!(!app_state_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_persists_custom_vim_settings_to_settings_and_app_state() {
+        let root = temp_root("vim-custom-settings-persist");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        let app_state_path = root.join("app-state.json");
+        app.app_state_path_override = Some(app_state_path.clone());
+        app.settings_panel_draft.vim_keybindings = true;
+        app.settings_panel_draft.vim.disabled_bindings = vec!["Q".to_owned()];
+        app.settings_panel_draft.vim.key_overrides = vec![kuroya_core::EditorVimKeyOverride {
+            before: "K".to_owned(),
+            after: "0".to_owned(),
+            command: None,
+        }];
+
+        app.apply_settings_panel();
+
+        assert!(app.settings.vim_keybindings);
+        assert_eq!(app.settings.vim.disabled_bindings, ["Q"]);
+        assert_eq!(app.app_state_vim_keybindings, app.settings.vim_keybindings);
+        assert_eq!(app.app_state_vim, app.settings.vim);
+        let saved = EditorSettings::load_or_create_with_recovery(&settings_path(&root))
+            .unwrap()
+            .settings;
+        assert_eq!(saved.vim_keybindings, app.settings.vim_keybindings);
+        assert_eq!(saved.vim, app.settings.vim);
+        let app_state: crate::persistence::AppState =
+            serde_json::from_str(&fs::read_to_string(app_state_path).unwrap()).unwrap();
+        assert_eq!(
+            app_state.vim_keybindings,
+            Some(app.settings.vim_keybindings)
+        );
+        assert_eq!(app_state.vim, Some(app.settings.vim.clone()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn apply_settings_panel_does_not_scan_for_whitespace_only_scan_setting_changes() {
         let root = temp_root("scan-whitespace");
         let settings = EditorSettings {
@@ -474,8 +579,7 @@ mod tests {
         assert!(status.contains("..."));
         assert!(
             status.chars().count()
-                <= "Settings changed, but save failed: ".chars().count()
-                    + DISPLAY_ERROR_LABEL_MAX_CHARS
+                <= "Could not save settings: ".chars().count() + DISPLAY_ERROR_LABEL_MAX_CHARS
         );
     }
 

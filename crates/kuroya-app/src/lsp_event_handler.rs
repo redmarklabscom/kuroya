@@ -2,8 +2,9 @@ use crate::{
     KuroyaApp,
     lsp_runtime::{
         LSP_MAX_RESTART_ATTEMPTS, LspRestartDecision, lsp_buffer_synced_status,
-        lsp_restart_buffer_ids, lsp_restart_decision, lsp_server_ready_status,
-        lsp_status_display_message, lsp_stopped_disabled_status, lsp_stopped_no_buffers_status,
+        lsp_restart_buffer_ids, lsp_restart_decision, lsp_server_config_for_language,
+        lsp_server_configs_for_settings, lsp_server_ready_status, lsp_status_display_message,
+        lsp_stopped_disabled_status, lsp_stopped_no_buffers_status,
         lsp_stopped_restart_scheduled_status, lsp_stopped_workspace_symbol_reason,
         schedule_lsp_restart_at,
     },
@@ -13,7 +14,6 @@ use crate::{
         buffer_id_path_version_matches, lsp_event_path_is_current, workspace_event_matches,
     },
 };
-use kuroya_core::server_for_language;
 use std::{path::Path, time::Instant};
 
 impl KuroyaApp {
@@ -155,9 +155,12 @@ impl KuroyaApp {
                     return None;
                 }
 
+                let lsp_configs = lsp_server_configs_for_settings(&self.settings);
                 let restart_targets = lsp_restart_buffer_ids(
                     &language,
                     &self.buffers,
+                    &lsp_configs,
+                    &self.plugin_languages,
                     &self.workspace.root,
                     &self.lossy_decoded_buffers,
                     &self.binary_preview_buffers,
@@ -242,9 +245,10 @@ impl KuroyaApp {
         if !lsp_event_path_is_current(&self.workspace.root, path) {
             return;
         }
+        let lsp_configs = lsp_server_configs_for_settings(&self.settings);
         let submitted_for_language = self.buffers.iter().any(|buffer| {
             buffer.path().is_some_and(|buffer_path| buffer_path == path)
-                && server_for_language(buffer.language())
+                && lsp_server_config_for_language(&lsp_configs, buffer.language())
                     .is_some_and(|config| config.language == language)
         });
         if submitted_for_language {
@@ -255,11 +259,12 @@ impl KuroyaApp {
     }
 
     fn continue_pending_format_on_save_for_lsp(&mut self, language: &str) -> usize {
+        let lsp_configs = lsp_server_configs_for_settings(&self.settings);
         let mut pending_save_ids = Vec::with_capacity(self.pending_format_on_save.len());
         for id in self.pending_format_on_save.keys().copied() {
             if self
                 .buffer(id)
-                .and_then(|buffer| server_for_language(buffer.language()))
+                .and_then(|buffer| lsp_server_config_for_language(&lsp_configs, buffer.language()))
                 .is_some_and(|server| server.language == language)
             {
                 pending_save_ids.push(id);

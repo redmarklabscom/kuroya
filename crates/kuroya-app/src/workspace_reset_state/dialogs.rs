@@ -68,7 +68,6 @@ impl KuroyaApp {
         self.editor_vim_last_char_find = None;
         self.editor_vim_unnamed_register = None;
         self.editor_vim_last_change = None;
-        self.editor_defer_match_highlights_for_buffer = None;
         self.project_search = false;
         self.project_search_placement = PanelPlacement::default();
         self.project_search_width = PROJECT_SEARCH_DEFAULT_WIDTH;

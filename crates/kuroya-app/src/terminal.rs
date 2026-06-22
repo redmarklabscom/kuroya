@@ -53,6 +53,14 @@ pub(super) fn terminal_input_id(session_id: usize) -> Id {
     Id::new(("terminal-input", session_id))
 }
 
+pub(super) fn terminal_search_input_id() -> Id {
+    Id::new("terminal-search-input")
+}
+
+pub(super) fn terminal_rename_input_id(session_id: usize) -> Id {
+    Id::new(("terminal-rename-input", session_id))
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -63,7 +71,8 @@ const TERMINAL_DEFAULT_DISPLAY_LABEL: &str = "Terminal";
 pub(super) const TERMINAL_DRAIN_EVENT_BUDGET: usize = 512;
 pub(super) const TERMINAL_DRAIN_BYTE_BUDGET: usize = 512 * 1024;
 const TERMINAL_COMMAND_CHANNEL_BOUND: usize = TERMINAL_DRAIN_EVENT_BUDGET * 8;
-const TERMINAL_OUTPUT_CHANNEL_BOUND: usize = TERMINAL_DRAIN_EVENT_BUDGET * 16;
+const TERMINAL_OUTPUT_CHANNEL_BOUND: usize = TERMINAL_DRAIN_EVENT_BUDGET * 4;
+const TERMINAL_MAX_SESSIONS: usize = 32;
 
 pub struct TerminalPane {
     pub visible: bool,
@@ -135,6 +144,15 @@ pub struct TerminalPane {
     repaint_context: Option<Context>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TerminalDiagnosticsStats {
+    pub(crate) sessions: usize,
+    pub(crate) configured_scrollback_rows: usize,
+    pub(crate) searchable_lines: usize,
+    pub(crate) search_buffer_bytes: usize,
+    pub(crate) active_sessions: usize,
+}
+
 struct TerminalSession {
     id: usize,
     parser: vt100::Parser<TerminalCallbacks>,
@@ -158,6 +176,30 @@ struct TerminalSession {
     search_pending_carriage_return: bool,
     search_ansi_state: search::TerminalSearchAnsiState,
     search_utf8_tail: Vec<u8>,
+}
+
+impl TerminalPane {
+    pub(crate) fn diagnostics_stats(&self) -> TerminalDiagnosticsStats {
+        TerminalDiagnosticsStats {
+            sessions: self.sessions.len(),
+            configured_scrollback_rows: self.scrollback_rows,
+            searchable_lines: self
+                .sessions
+                .iter()
+                .map(|session| session.search_line_count)
+                .sum(),
+            search_buffer_bytes: self
+                .sessions
+                .iter()
+                .map(|session| session.search_buffer.len())
+                .sum(),
+            active_sessions: self
+                .sessions
+                .iter()
+                .filter(|session| session.started)
+                .count(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -238,6 +280,7 @@ struct TerminalSelectionDrag {
 struct TerminalCallbacks {
     pending_inputs: Vec<String>,
     pending_bells: usize,
+    pending_clear_scrollback: bool,
     window_title: Option<String>,
     shell_integration: TerminalShellIntegrationState,
 }
@@ -313,7 +356,16 @@ impl Callbacks for TerminalCallbacks {
             self.pending_inputs
                 .push(format!("\x1b[{};{}R", row + 1, col + 1));
         }
+        if csi_erases_scrollback(i1, params, c) {
+            self.pending_clear_scrollback = true;
+        }
     }
+}
+
+fn csi_erases_scrollback(i1: Option<u8>, params: &[&[u16]], c: char) -> bool {
+    c == 'J'
+        && matches!(i1, None | Some(b'?'))
+        && params.first().and_then(|param| param.first()).copied() == Some(3)
 }
 
 impl TerminalCallbacks {
@@ -384,9 +436,16 @@ impl TerminalPane {
     pub(crate) fn input_focused(&self, ctx: &Context) -> bool {
         self.visible
             && ctx.memory(|memory| {
+                let search_focused =
+                    self.search_open && memory.has_focus(terminal_search_input_id());
+                let rename_focused = self.pending_rename_session_id.is_some_and(|session_id| {
+                    memory.has_focus(terminal_rename_input_id(session_id))
+                });
                 self.sessions
                     .iter()
                     .any(|session| memory.has_focus(terminal_input_id(session.id)))
+                    || search_focused
+                    || rename_focused
             })
     }
 
@@ -407,6 +466,11 @@ impl TerminalPane {
         self.active_session = self.sessions.len().saturating_sub(1);
         self.visible = true;
         rx_command
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_rename_session_for_test(&mut self, index: usize) {
+        self.begin_rename_session(index);
     }
 
     #[cfg(test)]

@@ -10,7 +10,6 @@ anyhow.workspace = true
 git2 = "0.21"
 globset = "0.4"
 ignore = "0.4"
-rayon = "1.11"
 regex.workspace = true
 ropey = "1.6.1"
 serde.workspace = true

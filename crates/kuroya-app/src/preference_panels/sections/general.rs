@@ -100,3 +100,18 @@ fn autosave_mode_label(mode: EditorAutoSaveMode) -> &'static str {
         EditorAutoSaveMode::OnWindowChange => "On window change",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::autosave_mode_label;
+    use kuroya_core::EditorAutoSaveMode;
+
+    #[test]
+    fn autosave_mode_label_names_modes() {
+        assert_eq!(autosave_mode_label(EditorAutoSaveMode::Off), "Off");
+        assert_eq!(
+            autosave_mode_label(EditorAutoSaveMode::AfterDelay),
+            "After delay"
+        );
+    }
+}

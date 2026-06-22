@@ -5,6 +5,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(not(test))]
 const APP_STATE_FILE_NAME: &str = "state.json";
 const STATE_DIR_NAME: &str = ".kuroya";
 const SESSION_FILE_NAME: &str = "session.json";
@@ -19,6 +20,7 @@ const WORKSPACE_STATE_COMPONENT_MAX_BYTES: usize = 240;
 const WORKSPACE_STATE_HASH_OFFSET: u64 = 0xcbf29ce484222325;
 const WORKSPACE_STATE_HASH_PRIME: u64 = 0x100000001b3;
 
+#[cfg(not(test))]
 pub(crate) fn app_state_path() -> PathBuf {
     app_state_dir().join(APP_STATE_FILE_NAME)
 }

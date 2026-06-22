@@ -1,7 +1,7 @@
 use crate::lsp_completion_resolve::CompletionResolveIntent;
 use kuroya_core::{
-    BufferId, Diagnostic, LanguageId, LspCallHierarchyItem, LspCodeAction, LspCodeLens,
-    LspCompletionItem, LspRequestId, LspTypeHierarchyItem, TextSnapshot,
+    BufferId, Diagnostic, LspCallHierarchyItem, LspCodeAction, LspCodeLens, LspCompletionItem,
+    LspRequestId, LspTypeHierarchyItem, TextSnapshot,
 };
 use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
@@ -11,7 +11,7 @@ pub(super) enum LspClientCommand {
     DidOpen {
         id: BufferId,
         path: PathBuf,
-        language: LanguageId,
+        language: String,
         version: u64,
         text: TextSnapshot,
     },

@@ -39,11 +39,13 @@ use crate::{
         TerminalCommand, TerminalEvent, TerminalFinishReason, default_shell_label,
         terminal_shell_label,
     },
-    terminal_support::{TERMINAL_SCROLLBACK_ROWS, initial_terminal_size},
+    terminal_support::{
+        TERMINAL_SCROLLBACK_ROWS, initial_terminal_size, terminal_size_from_points,
+    },
     ui_icons::IconKind,
 };
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
-use egui::{Event, ImeEvent, Modifiers};
+use egui::{Event, ImeEvent, Modifiers, RawInput, vec2};
 use kuroya_core::{
     DEFAULT_TERMINAL_ALT_CLICK_MOVES_CURSOR, DEFAULT_TERMINAL_BELL_DURATION_MS,
     DEFAULT_TERMINAL_COPY_ON_SELECTION, DEFAULT_TERMINAL_CURSOR_WIDTH,
@@ -284,6 +286,22 @@ fn terminal_new_session_exits_split_view() {
 }
 
 #[test]
+fn terminal_new_sessions_stop_at_session_cap() {
+    let size = test_terminal_size();
+    let sessions = (0..super::TERMINAL_MAX_SESSIONS)
+        .map(|index| session_without_command(index + 1, size))
+        .collect::<Vec<_>>();
+    let mut pane = pane_with_sessions(sessions, size);
+    assert_eq!(pane.sessions.len(), super::TERMINAL_MAX_SESSIONS);
+    assert!(!pane.can_open_session());
+
+    pane.open_new_session();
+    pane.split_active_session();
+
+    assert_eq!(pane.sessions.len(), super::TERMINAL_MAX_SESSIONS);
+}
+
+#[test]
 fn terminal_scrollback_rows_are_clamped() {
     let mut pane = TerminalPane::new(
         PathBuf::from("workspace"),
@@ -297,6 +315,76 @@ fn terminal_scrollback_rows_are_clamped() {
     pane.set_scrollback_rows(25_000);
 
     assert_eq!(pane.scrollback_rows, 25_000);
+}
+
+#[test]
+fn terminal_lowering_scrollback_reclaims_existing_parser_history() {
+    let size = PtySize {
+        rows: 3,
+        cols: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    let output = (0..150)
+        .map(|index| format!("line-{index:03}\r\n"))
+        .collect::<String>();
+    let mut pane = pane_with_session(session_with_output(1, size, output.as_bytes()), size);
+
+    pane.sessions[0]
+        .parser
+        .screen_mut()
+        .set_scrollback(usize::MAX);
+    assert!(pane.sessions[0].scrollback() > MIN_TERMINAL_SCROLLBACK_ROWS);
+
+    pane.set_scrollback_rows(MIN_TERMINAL_SCROLLBACK_ROWS);
+
+    assert_eq!(
+        pane.sessions[0].scrollback_rows,
+        MIN_TERMINAL_SCROLLBACK_ROWS
+    );
+    pane.sessions[0]
+        .parser
+        .screen_mut()
+        .set_scrollback(usize::MAX);
+    assert!(pane.sessions[0].scrollback() <= MIN_TERMINAL_SCROLLBACK_ROWS);
+    assert!(
+        !pane.sessions[0]
+            .parser
+            .screen()
+            .contents()
+            .contains("line-000")
+    );
+
+    pane.sessions[0].parser.screen_mut().set_scrollback(0);
+    assert!(pane.sessions[0].copyable_text().contains("line-149"));
+}
+
+#[test]
+fn terminal_lowering_scrollback_in_alternate_screen_does_not_replay_search_buffer() {
+    let size = PtySize {
+        rows: 3,
+        cols: 32,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    let output = (0..10)
+        .map(|index| format!("line-{index:03}\r\n"))
+        .collect::<String>();
+    let mut pane = pane_with_session(session_with_output(1, size, output.as_bytes()), size);
+    let alternate_output = b"\x1b[?1049hALT-SCREEN-ONLY\r\n";
+    pane.sessions[0].append_search_output(alternate_output);
+    pane.sessions[0].parser.process(alternate_output);
+    assert!(pane.sessions[0].parser.screen().alternate_screen());
+
+    pane.set_scrollback_rows(MIN_TERMINAL_SCROLLBACK_ROWS);
+    pane.sessions[0].parser.process(b"\x1b[?1049l");
+    pane.sessions[0]
+        .parser
+        .screen_mut()
+        .set_scrollback(usize::MAX);
+
+    let contents = pane.sessions[0].parser.screen().contents();
+    assert!(!contents.contains("ALT-SCREEN-ONLY"));
 }
 
 #[test]
@@ -492,6 +580,43 @@ fn terminal_resize_to_same_size_is_not_requeued() {
     pane.resize_session_to_fit(0, 720.0, 180.0);
     let second_resize = recv_resize(&rx_command);
     assert_ne!(second_resize.cols, first_resize.cols);
+}
+
+#[test]
+fn terminal_ui_resizes_pty_to_drawable_content_rect() {
+    let size = test_terminal_size();
+    let (mut pane, rx_command) = pane_with_command_session(size);
+    let mut command_bus = kuroya_core::CommandBus::default();
+    let ctx = egui::Context::default();
+    let input = RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            vec2(800.0, 260.0),
+        )),
+        ..RawInput::default()
+    };
+
+    let _ = ctx.run(input, |ctx| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| {
+                ui.set_min_size(vec2(800.0, 260.0));
+                pane.ui(ui, &mut command_bus);
+            });
+    });
+
+    let resize = recv_resize(&rx_command);
+    let expected = terminal_size_from_points(
+        780.0,
+        202.0,
+        pane.font_size,
+        pane.line_height,
+        pane.letter_spacing,
+        pane.min_rows,
+        pane.min_columns,
+    );
+    assert_eq!(resize.cols, expected.cols);
+    assert_eq!(resize.rows, expected.rows);
 }
 
 #[test]
@@ -947,6 +1072,78 @@ fn terminal_context_clear_resets_visible_buffer_without_stopping_session() {
     assert!(pane.sessions[0].copyable_text().is_empty());
     assert!(pane.sessions[0].search_buffer.is_empty());
     assert!(pane.sessions[0].started);
+}
+
+#[test]
+fn terminal_output_clear_sequence_erases_parser_and_search_scrollback() {
+    let size = PtySize {
+        rows: 3,
+        cols: 32,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    let output = (0..12)
+        .map(|index| format!("old-line-{index:02}\r\n"))
+        .collect::<String>();
+    let mut pane = pane_with_session(session_with_output(1, size, output.as_bytes()), size);
+    pane.sessions[0]
+        .parser
+        .screen_mut()
+        .set_scrollback(usize::MAX);
+    assert!(pane.sessions[0].scrollback() > 0);
+    assert!(pane.sessions[0].search_buffer.contains("old-line-00"));
+
+    pane.sessions[0]
+        .tx_output
+        .send(TerminalEvent::Output(
+            b"\x1b[H\x1b[2J\x1b[3Jprompt> ".to_vec(),
+        ))
+        .expect("test output channel accepts clear sequence");
+    pane.drain_output();
+    pane.sessions[0]
+        .parser
+        .screen_mut()
+        .set_scrollback(usize::MAX);
+
+    assert_eq!(pane.sessions[0].scrollback(), 0);
+    assert!(!pane.sessions[0].search_buffer.contains("old-line"));
+    assert!(pane.sessions[0].search_buffer.contains("prompt>"));
+    assert_eq!(pane.sessions[0].copyable_text(), "prompt>");
+}
+
+#[test]
+fn terminal_output_clear_sequence_preserves_fresh_post_clear_scrollback() {
+    let size = PtySize {
+        rows: 3,
+        cols: 32,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    let output = (0..8)
+        .map(|index| format!("old-line-{index:02}\r\n"))
+        .collect::<String>();
+    let mut pane = pane_with_session(session_with_output(1, size, output.as_bytes()), size);
+    let fresh_output = (0..8)
+        .map(|index| format!("fresh-line-{index:02}\r\n"))
+        .collect::<String>();
+    let clear_and_fresh = format!("\x1b[H\x1b[2J\x1b[3J{fresh_output}");
+
+    pane.sessions[0]
+        .tx_output
+        .send(TerminalEvent::Output(clear_and_fresh.into_bytes()))
+        .expect("test output channel accepts clear sequence");
+    pane.drain_output();
+    pane.sessions[0]
+        .parser
+        .screen_mut()
+        .set_scrollback(usize::MAX);
+
+    let contents = pane.sessions[0].parser.screen().contents();
+    assert!(pane.sessions[0].scrollback() > 0);
+    assert!(!contents.contains("old-line"));
+    assert!(contents.contains("fresh-line-00"));
+    assert!(!pane.sessions[0].search_buffer.contains("old-line"));
+    assert!(pane.sessions[0].search_buffer.contains("fresh-line-00"));
 }
 
 #[test]

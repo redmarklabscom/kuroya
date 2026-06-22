@@ -16,7 +16,7 @@ use crate::{
     source_control_blame_runtime::git_blame_editor_decoration_hover_text,
     syntax_tree_cache::TreeSitterInjection,
 };
-use eframe::egui::{self, PointerButton, Rect, WidgetInfo, pos2, vec2};
+use eframe::egui::{self, Color32, PointerButton, Rect, WidgetInfo, pos2, vec2};
 use kuroya_core::{
     DEFAULT_EDITOR_STOP_RENDERING_LINE_AFTER, DiagnosticSeverity, EditorBracketPairGuideMode,
     EditorColorDecoratorsActivatedOn, EditorCursorSmoothCaretAnimation, EditorCursorStyle,
@@ -80,6 +80,10 @@ pub(crate) struct EditorRowContext<'a> {
     pub(crate) gutter_width: f32,
     pub(crate) char_width: f32,
     pub(crate) font_size: f32,
+    pub(crate) text_color: Color32,
+    pub(crate) weak_text_color: Color32,
+    pub(crate) selection_bg_fill: Color32,
+    pub(crate) warn_fg_color: Color32,
     pub(crate) line_numbers: EditorLineNumbers,
     pub(crate) select_on_line_numbers: bool,
     pub(crate) render_whitespace: EditorRenderWhitespace,
@@ -140,8 +144,6 @@ pub(crate) struct EditorRowContext<'a> {
     pub(crate) cursor_positions: &'a [CursorPosition],
     pub(crate) selections: &'a [Selection],
     pub(crate) find_matches: &'a [Range<usize>],
-    pub(crate) occurrence_highlight_ranges: &'a [Range<usize>],
-    pub(crate) selection_highlight_ranges: &'a [Range<usize>],
     pub(crate) active_find_match: usize,
     pub(crate) document_highlight_ranges: &'a [DocumentHighlightSpan],
     pub(crate) semantic_token_ranges: &'a [SemanticTokenSpan],

@@ -653,8 +653,9 @@ pub(crate) fn render_minimap(
     let first_visible_line = minimap_first_visible_line(scroll_offset_y, row_height, line_count);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
+    let visuals = ui.visuals();
 
-    painter.rect_filled(rect, 0.0, Color32::from_rgb(30, 30, 30));
+    painter.rect_filled(rect, 0.0, minimap_background_color(visuals));
     let line_span = minimap_content_line_span(rect);
     let max_column = minimap_line_length_max_column(max_column, render_characters);
     let stroke_width = minimap_stroke_width(scale);
@@ -701,19 +702,19 @@ pub(crate) fn render_minimap(
                 minimap_line_width(line_len, max_column, content_width, render_characters);
             let x2 = x1 + line_width;
             let color = if cursor_line_lookup.contains(line_number) {
-                Color32::from_rgb(82, 82, 82)
+                minimap_cursor_line_color(visuals)
             } else if has_diagnostics
                 && let Some(severity) = diagnostics_by_line.get(&line_number).copied()
             {
                 diagnostic_color(severity)
             } else if find_match_line_lookup.contains(line_number) {
-                Color32::from_rgb(231, 185, 87)
+                minimap_find_match_line_color(visuals)
             } else if has_diff_lines
                 && let Some(kind) = minimap_line_change_for_sample(&mut diff_line_iter, line_number)
             {
                 minimap_line_change_color(kind)
             } else {
-                Color32::from_rgb(50, 50, 50)
+                minimap_default_line_color(visuals)
             };
             painter.line_segment(
                 [pos2(x1, y), pos2(x2, y)],
@@ -723,7 +724,14 @@ pub(crate) fn render_minimap(
                 && let Some(label) =
                     minimap_section_header_for_sample(&mut section_header_iter, line_number)
             {
-                paint_minimap_section_header(&painter, rect, y, label, section_header_style);
+                paint_minimap_section_header(
+                    &painter,
+                    rect,
+                    y,
+                    label,
+                    section_header_style,
+                    visuals,
+                );
             }
         }
     }
@@ -734,13 +742,11 @@ pub(crate) fn render_minimap(
         response.hovered(),
         response.dragged() || response.is_pointer_button_down_on(),
     ) {
-        let slider_color = if response.is_pointer_button_down_on() || response.dragged() {
-            Color32::from_rgba_unmultiplied(0xbf, 0xbf, 0xbf, 0x66)
-        } else if response.hovered() {
-            Color32::from_rgba_unmultiplied(0x64, 0x64, 0x64, 0xb3)
-        } else {
-            Color32::from_rgba_unmultiplied(0x79, 0x79, 0x79, 0x66)
-        };
+        let slider_color = minimap_slider_color(
+            visuals,
+            response.hovered(),
+            response.is_pointer_button_down_on() || response.dragged(),
+        );
         painter.rect_filled(viewport_rect, 0.0, slider_color);
     }
 
@@ -756,6 +762,37 @@ pub(crate) fn render_minimap(
     }
 
     None
+}
+
+fn minimap_background_color(visuals: &egui::Visuals) -> Color32 {
+    visuals.code_bg_color
+}
+
+fn minimap_cursor_line_color(visuals: &egui::Visuals) -> Color32 {
+    visuals.widgets.active.bg_fill
+}
+
+fn minimap_find_match_line_color(visuals: &egui::Visuals) -> Color32 {
+    visuals.warn_fg_color
+}
+
+fn minimap_default_line_color(visuals: &egui::Visuals) -> Color32 {
+    visuals.widgets.inactive.bg_stroke.color
+}
+
+fn minimap_slider_color(visuals: &egui::Visuals, hovered: bool, interacting: bool) -> Color32 {
+    let (base, alpha) = if interacting {
+        (visuals.selection.bg_fill, 150)
+    } else if hovered {
+        (visuals.widgets.hovered.bg_fill, 180)
+    } else {
+        (visuals.widgets.inactive.bg_fill, 100)
+    };
+    color_with_alpha(base, alpha)
+}
+
+fn color_with_alpha(color: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
 fn minimap_render_size(width: f32, height: f32) -> Option<egui::Vec2> {
@@ -905,6 +942,7 @@ fn paint_minimap_section_header(
     y: f32,
     label: &str,
     style: MinimapSectionHeaderPaintStyle,
+    visuals: &egui::Visuals,
 ) {
     let text = minimap_section_header_display_text_for_capacity(label, style.char_capacity);
     if text.is_empty() {
@@ -922,11 +960,11 @@ fn paint_minimap_section_header(
     painter.rect_filled(
         background,
         1.0,
-        Color32::from_rgba_unmultiplied(44, 68, 94, 180),
+        color_with_alpha(visuals.widgets.active.bg_fill, 220),
     );
 
     let font = FontId::new(style.font_size, FontFamily::Monospace);
-    let color = Color32::from_rgb(202, 217, 235);
+    let color = visuals.text_color();
     let y = top + style.font_size * 0.5;
     let galley = painter.layout_job(LayoutJob::single_section(
         text,

@@ -284,7 +284,7 @@ fn parse_keymap_named_key_name(name: &str) -> Option<ParsedKeymapKey> {
     } else if keymap_key_name_matches(name, &["space"]) {
         keymap_text_key("Space")
     } else if keymap_key_name_matches(name, &["escape", "esc"]) {
-        keymap_text_key("Escape")
+        keymap_navigation_key("Escape")
     } else if keymap_key_name_matches(name, &["backspace"]) {
         keymap_text_key("Backspace")
     } else if keymap_key_name_matches(name, &["delete", "del"]) {
@@ -663,6 +663,7 @@ mod tests {
             normalize_keymap_chord("command + slash"),
             Some("Cmd+/".to_owned())
         );
+        assert_eq!(normalize_keymap_chord("Esc"), Some("Escape".to_owned()));
 
         for chord in [
             "+P",
@@ -712,6 +713,10 @@ mod tests {
                     command: Command::OpenFile(PathBuf::from("src/main.rs")),
                 },
                 KeyBinding {
+                    chord: "Esc".to_owned(),
+                    command: Command::ToggleTerminal,
+                },
+                KeyBinding {
                     chord: " command + slash ".to_owned(),
                     command: Command::RunPluginCommand {
                         plugin_id: " example.plugin ".to_owned(),
@@ -721,13 +726,17 @@ mod tests {
             ],
         };
 
-        assert_eq!(keymap.sanitize(), 7);
+        assert_eq!(keymap.sanitize(), 8);
         assert_eq!(
             keymap.bindings,
             vec![
                 KeyBinding {
                     chord: "Ctrl+Shift+P".to_owned(),
                     command: Command::ToggleQuickOpen,
+                },
+                KeyBinding {
+                    chord: "Escape".to_owned(),
+                    command: Command::ToggleTerminal,
                 },
                 KeyBinding {
                     chord: "Cmd+/".to_owned(),

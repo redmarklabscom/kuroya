@@ -156,6 +156,179 @@ fn word_segmenter_locales_accept_vs_code_string_or_list() {
 }
 
 #[test]
+fn editor_vim_settings_accept_nested_overrides() {
+    let settings: EditorSettings = toml::from_str(
+        r#"
+        vim_keybindings = true
+
+        [vim]
+        disabled_bindings = ["Q", "<C-n>"]
+
+        [[vim.key_overrides]]
+        before = "H"
+        after = "0"
+
+        [[vim.key_overrides]]
+        before = "<Home>"
+        after = "<C-r>"
+        "#,
+    )
+    .expect("nested vim settings should load");
+
+    assert!(settings.vim_keybindings);
+    assert_eq!(settings.vim.disabled_bindings, ["Q", "<C-n>"]);
+    assert_eq!(
+        settings.vim.key_overrides,
+        [
+            EditorVimKeyOverride {
+                before: "H".to_owned(),
+                after: "0".to_owned(),
+                command: None,
+            },
+            EditorVimKeyOverride {
+                before: "<Home>".to_owned(),
+                after: "<C-r>".to_owned(),
+                command: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn editor_vim_settings_accept_command_overrides() {
+    let settings: EditorSettings = toml::from_str(
+        r#"
+        [[vim.key_overrides]]
+        before = "K"
+        command = "RequestHover"
+        "#,
+    )
+    .expect("nested vim command override should load");
+
+    assert_eq!(
+        settings.vim.key_overrides,
+        [EditorVimKeyOverride {
+            before: "K".to_owned(),
+            after: String::new(),
+            command: Some(crate::Command::RequestHover),
+        }]
+    );
+}
+
+#[test]
+fn editor_vim_settings_sanitize_empty_duplicate_and_long_entries() {
+    let mut settings = EditorSettings::default();
+    settings.vim.disabled_bindings = vec![" x ".to_owned(), "x".to_owned(), String::new()];
+    settings.vim.key_overrides = vec![
+        EditorVimKeyOverride {
+            before: " H ".to_owned(),
+            after: " 0 ".to_owned(),
+            command: None,
+        },
+        EditorVimKeyOverride {
+            before: "H".to_owned(),
+            after: "gg".to_owned(),
+            command: None,
+        },
+        EditorVimKeyOverride {
+            before: String::new(),
+            after: "0".to_owned(),
+            command: None,
+        },
+        EditorVimKeyOverride {
+            before: " K ".to_owned(),
+            after: String::new(),
+            command: Some(crate::Command::RequestHover),
+        },
+    ];
+
+    assert!(settings.sanitize());
+    assert_eq!(settings.vim.disabled_bindings, ["x"]);
+    assert_eq!(
+        settings.vim.key_overrides,
+        [
+            EditorVimKeyOverride {
+                before: "H".to_owned(),
+                after: "0".to_owned(),
+                command: None,
+            },
+            EditorVimKeyOverride {
+                before: "K".to_owned(),
+                after: String::new(),
+                command: Some(crate::Command::RequestHover),
+            },
+        ]
+    );
+}
+
+#[test]
+fn lsp_servers_default_to_builtin_configs() {
+    let settings: EditorSettings = toml::from_str("").expect("empty settings should load");
+
+    assert!(settings.lsp_servers.is_empty());
+    assert_eq!(
+        settings.lsp_server_configs(),
+        crate::lsp::default_server_configs()
+    );
+}
+
+#[test]
+fn lsp_servers_override_builtins_and_append_custom_servers() {
+    let settings: EditorSettings = toml::from_str(
+        r#"
+        [[lsp_servers]]
+        language = "Rust"
+        command = "rust-analyzer-custom"
+        args = ["--stdio"]
+        root_markers = ["Cargo.toml", ".git"]
+
+        [[lsp_servers]]
+        language = "go"
+        command = "gopls-custom"
+        root_markers = ["go.mod", "go.work", ".git"]
+
+        [[lsp_servers]]
+        language = "kuroya-test"
+        command = "kuroya-test-lsp"
+        args = ["--stdio"]
+        root_markers = [".kuroya-test"]
+        "#,
+    )
+    .expect("lsp server settings should load");
+
+    let servers = settings.lsp_server_configs();
+    let default_count = crate::lsp::default_server_configs().len();
+    let rust = servers
+        .iter()
+        .find(|server| server.language == "rust")
+        .expect("rust config should be present");
+    let python = servers
+        .iter()
+        .find(|server| server.language == "python")
+        .expect("python config should be present");
+    let go = servers
+        .iter()
+        .find(|server| server.language == "go")
+        .expect("custom go config should be present");
+    let custom = servers
+        .iter()
+        .find(|server| server.language == "kuroya-test")
+        .expect("custom config should be present");
+
+    assert_eq!(servers.len(), default_count + 1);
+    assert_eq!(rust.command, "rust-analyzer-custom");
+    assert_eq!(rust.args, ["--stdio"]);
+    assert_eq!(rust.root_markers, ["Cargo.toml", ".git"]);
+    assert_eq!(python.command, "pyright-langserver");
+    assert_eq!(go.command, "gopls-custom");
+    assert!(go.args.is_empty());
+    assert_eq!(go.root_markers, ["go.mod", "go.work", ".git"]);
+    assert_eq!(custom.command, "kuroya-test-lsp");
+    assert_eq!(custom.args, ["--stdio"]);
+    assert_eq!(custom.root_markers, [".kuroya-test"]);
+}
+
+#[test]
 fn active_indentation_highlight_accepts_kuroya_union_values() {
     let focused: EditorSettings = toml::from_str("highlight_active_indentation = true\n")
         .expect("boolean active indent setting should load");
@@ -378,12 +551,6 @@ fn editor_numeric_settings_are_clamped_to_reasonable_ranges() {
         clamp_editor_cursor_surrounding_lines(usize::MAX),
         MAX_EDITOR_CURSOR_SURROUNDING_LINES
     );
-    assert_eq!(clamp_editor_selection_highlight_max_length(0), 0);
-    assert_eq!(clamp_editor_selection_highlight_max_length(200), 200);
-    assert_eq!(
-        clamp_editor_selection_highlight_max_length(usize::MAX),
-        MAX_EDITOR_SELECTION_HIGHLIGHT_MAX_LENGTH
-    );
     assert_eq!(clamp_editor_folding_maximum_regions(0), 0);
     assert_eq!(clamp_editor_folding_maximum_regions(5_000), 5_000);
     assert_eq!(
@@ -414,15 +581,6 @@ fn editor_numeric_settings_are_clamped_to_reasonable_ranges() {
     assert_eq!(
         clamp_quick_suggestions_delay_ms(usize::MAX),
         MAX_QUICK_SUGGESTIONS_DELAY_MS
-    );
-    assert_eq!(
-        clamp_occurrences_highlight_delay_ms(0),
-        MIN_OCCURRENCES_HIGHLIGHT_DELAY_MS
-    );
-    assert_eq!(clamp_occurrences_highlight_delay_ms(175), 175);
-    assert_eq!(
-        clamp_occurrences_highlight_delay_ms(usize::MAX),
-        MAX_OCCURRENCES_HIGHLIGHT_DELAY_MS
     );
     assert_eq!(clamp_hover_delay_ms(0), MIN_HOVER_DELAY_MS);
     assert_eq!(clamp_hover_delay_ms(450), 450);

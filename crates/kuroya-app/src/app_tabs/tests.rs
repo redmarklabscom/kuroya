@@ -2,8 +2,9 @@ use super::{
     DiffTabContextActionKind, TAB_ACTIONS_RESERVED_WIDTH, TAB_MAX_WIDTH, TAB_MIN_WIDTH,
     TabCapabilityRequests, TabPathCapabilities, TabRowPreparationCache, TabRowPreparationInput,
     TabSourceControlState, diff_tab_context_action_command, prepare_tab_path_capabilities,
-    prepare_tab_row, responsive_tab_max_width, tab_action_still_targets_row,
-    tab_path_exists_cached, tab_path_known_openable_cached, tab_source_control_states,
+    prepare_tab_row, responsive_tab_actions_width, responsive_tab_max_width,
+    tab_action_still_targets_row, tab_path_exists_cached, tab_path_known_openable_cached,
+    tab_source_control_states,
 };
 use crate::{
     KuroyaApp,
@@ -581,9 +582,23 @@ fn responsive_tab_max_width_bounds_tight_and_non_finite_widths() {
     assert_eq!(responsive_tab_max_width(f32::NAN, 3), TAB_MIN_WIDTH);
     assert_eq!(responsive_tab_max_width(f32::INFINITY, 3), TAB_MAX_WIDTH);
     assert_eq!(responsive_tab_max_width(1000.0, 0), TAB_MAX_WIDTH);
+    assert_eq!(responsive_tab_max_width(300.0, 3), 100.0);
+}
+
+#[test]
+fn responsive_tab_actions_width_reserves_fixed_action_area_when_possible() {
     assert_eq!(
-        responsive_tab_max_width(TAB_ACTIONS_RESERVED_WIDTH + 300.0, 3),
-        100.0
+        responsive_tab_actions_width(TAB_ACTIONS_RESERVED_WIDTH + 300.0),
+        TAB_ACTIONS_RESERVED_WIDTH
+    );
+    assert_eq!(responsive_tab_actions_width(90.0), 90.0);
+    assert_eq!(
+        responsive_tab_actions_width(f32::INFINITY),
+        TAB_ACTIONS_RESERVED_WIDTH
+    );
+    assert_eq!(
+        responsive_tab_actions_width(f32::NAN),
+        TAB_ACTIONS_RESERVED_WIDTH
     );
 }
 

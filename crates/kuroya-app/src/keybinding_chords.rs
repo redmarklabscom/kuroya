@@ -44,6 +44,7 @@ pub(crate) fn keybinding_requires_primary_modifier(key: Key) -> bool {
             | Key::End
             | Key::PageUp
             | Key::PageDown
+            | Key::Escape
             | Key::F1
             | Key::F2
             | Key::F3

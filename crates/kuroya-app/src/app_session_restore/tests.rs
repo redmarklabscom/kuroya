@@ -2,6 +2,9 @@ use super::*;
 use crate::{
     app_startup_context::AppStartupContext,
     buffer_find::BufferFindScope,
+    commands::keybinding_chord_for_command,
+    keybinding_input::CapturedKeybinding,
+    keybindings_panel_actions::PendingKeybindingsPanelActions,
     persistence::{
         BufferHistoryState, BufferViewState, PaneBufferViewState, PersistedSession,
         PersistedTerminalSession, RecoveredBuffer, SkippedRecoveredBuffer,
@@ -9,10 +12,11 @@ use crate::{
     quick_open::QuickOpenQueryMemoryEntry,
     terminal::TerminalPane,
     transient_state::EditorImePreedit,
+    workspace_state::settings_path,
 };
 use kuroya_core::{
     BufferHistorySnapshot, Command, EditorSettings, GitCommitSummary, GitStashEntry, TextBuffer,
-    Workspace,
+    Workspace, keymap::KeyBinding,
 };
 use std::{
     cell::Cell,
@@ -1142,6 +1146,62 @@ fn restore_session_restores_persistent_ui_overlay_state_and_resets_transients() 
     assert!(app.keybinding_capture_command.is_none());
 
     drop(app);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn restore_session_cancels_pending_escape_keybinding_capture_before_resetting_overlays() {
+    let root = temp_root("restore-session-cancels-keybinding-capture");
+    fs::create_dir_all(&root).unwrap();
+    let mut app = app_for_test(root.clone());
+    app.settings.keymap.bindings = vec![
+        KeyBinding {
+            chord: "Escape".to_owned(),
+            command: Command::ToggleQuickOpen,
+        },
+        KeyBinding {
+            chord: "Ctrl+Z".to_owned(),
+            command: Command::Undo,
+        },
+    ];
+    app.keybindings_open = true;
+    app.keybinding_capture_command = Some(Command::Undo);
+
+    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+        captured: Some(CapturedKeybinding::Escape),
+        ..PendingKeybindingsPanelActions::default()
+    });
+    assert_eq!(app.keybinding_capture_command, Some(Command::Undo));
+    assert!(app.keybinding_escape_cancel.is_some());
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
+        Some("Ctrl+Z".to_owned())
+    );
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::ToggleQuickOpen),
+        Some("Escape".to_owned())
+    );
+
+    app.restore_session(PersistedSession {
+        workspace_root: root.clone(),
+        keybindings_open: false,
+        recent_projects: Vec::new(),
+        recovery: Vec::new(),
+        ..PersistedSession::default()
+    });
+
+    assert!(!app.keybindings_open);
+    assert_eq!(app.keybinding_capture_command, None);
+    assert!(app.keybinding_escape_cancel.is_none());
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
+        Some("Ctrl+Z".to_owned())
+    );
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::ToggleQuickOpen),
+        Some("Escape".to_owned())
+    );
+    assert!(!settings_path(&root).exists());
     fs::remove_dir_all(root).unwrap();
 }
 

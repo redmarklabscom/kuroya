@@ -23,14 +23,9 @@ pub(crate) use labels::quick_open_relative_label;
 pub(crate) use labels::quick_open_result_label;
 pub(crate) use labels::quick_open_result_label_with_navigation_line_column;
 #[cfg(test)]
-#[allow(unused_imports)]
 pub(crate) use labels::{
-    is_clean_quick_open_result_label, is_quick_open_format_control, quick_open_decimal_digits,
-    quick_open_line_column_suffix_chars, quick_open_path_display_label,
-    quick_open_path_display_label_owned, quick_open_relative_label_path_is_clean,
-    quick_open_result_label_from_parts, quick_open_result_label_with_navigation,
-    sanitized_quick_open_result_label, sanitized_quick_open_result_label_text,
-    truncate_quick_open_result_label,
+    quick_open_result_label_with_navigation, sanitized_quick_open_result_label,
+    sanitized_quick_open_result_label_text,
 };
 use query::quick_open_lowercase;
 #[cfg(test)]
@@ -39,8 +34,6 @@ pub(crate) use query::{
     QuickOpenMatchQuery, QuickOpenQuery, normalize_quick_open_memory_query, parse_line_column,
     parse_quick_open_query, sanitize_quick_open_query_input,
 };
-#[allow(unused_imports)]
-pub(crate) use ranking::QuickOpenMatch;
 use ranking::QuickOpenNavigationRankKeys;
 #[cfg(test)]
 use ranking::{

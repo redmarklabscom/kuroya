@@ -3,7 +3,7 @@ use crate::{
     layout::{EDITOR_SPLIT_HANDLE_WIDTH, adjust_split_weights},
     session_state::EditorPane,
 };
-use eframe::egui::{self, Align, Color32, Sense, pos2, vec2};
+use eframe::egui::{self, Align, Sense, pos2, vec2};
 
 mod breadcrumbs;
 
@@ -64,10 +64,11 @@ impl KuroyaApp {
                             Sense::click_and_drag(),
                         );
                         let response = response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                        let visuals = ui.visuals();
                         let fill = if response.dragged() || response.hovered() {
-                            Color32::from_rgb(91, 141, 239)
+                            visuals.selection.stroke.color
                         } else {
-                            Color32::from_rgb(38, 43, 52)
+                            visuals.widgets.noninteractive.bg_stroke.color
                         };
                         ui.painter().rect_filled(
                             egui::Rect::from_min_max(

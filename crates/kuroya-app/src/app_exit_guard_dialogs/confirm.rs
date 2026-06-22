@@ -4,7 +4,7 @@ use crate::{
     save_lifecycle::{dirty_buffer_ids, dirty_buffer_save_block_reason},
     ui_text::count_label,
 };
-use eframe::egui::{self, Align, Color32, Context, Key, RichText};
+use eframe::egui::{self, Align, Context, Key, RichText};
 
 pub(super) fn render_exit_confirm_guard(app: &mut KuroyaApp, ctx: &Context) {
     let dirty = dirty_buffer_ids(&app.buffers);
@@ -49,7 +49,11 @@ pub(super) fn render_exit_confirm_guard(app: &mut KuroyaApp, ctx: &Context) {
                 ui.label(exit_terminal_summary(terminal_count));
             }
             if let Some(reason) = &save_block {
-                ui.label(RichText::new(reason).small().color(Color32::YELLOW));
+                ui.label(
+                    RichText::new(reason)
+                        .small()
+                        .color(ui.visuals().warn_fg_color),
+                );
             }
 
             if ui.input(|input| input.key_pressed(Key::Escape)) {

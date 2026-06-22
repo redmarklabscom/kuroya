@@ -68,6 +68,9 @@ struct PendingViewportScroll {
 
 impl KuroyaApp {
     pub(crate) fn restore_session(&mut self, mut session: PersistedSession) {
+        if self.has_keybinding_capture_in_progress() && !self.cancel_keybinding_capture() {
+            return;
+        }
         self.clear_session_restore_runtime_state();
         if !restore_session_workspace_root_matches(&self.workspace.root, &session.workspace_root) {
             clear_restore_path_state(&mut session);
@@ -394,7 +397,6 @@ impl KuroyaApp {
         self.diff_cache_pending.clear();
         self.merge_conflict_cache.clear();
         self.editor_bracket_overlay_cache.clear();
-        self.editor_match_highlight_cache.clear();
         self.minimap_line_length_cache.clear();
         self.minimap_section_header_cache.clear();
         self.line_render_protection_cache.clear();

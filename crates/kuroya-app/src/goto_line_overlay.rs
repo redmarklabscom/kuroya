@@ -3,7 +3,7 @@ use crate::{
     popup_buttons::{PopupButtonKind, popup_compact_button},
     quick_open::parse_line_column,
 };
-use eframe::egui::{self, Color32, Context, Key, RichText, TextEdit};
+use eframe::egui::{self, Context, Key, RichText, TextEdit};
 use kuroya_core::TextBuffer;
 use std::fmt::Write as _;
 
@@ -92,7 +92,7 @@ impl KuroyaApp {
                 ui.label(
                     RichText::new("One-based line and column")
                         .small()
-                        .color(Color32::from_rgb(126, 136, 150)),
+                        .color(ui.visuals().weak_text_color()),
                 );
             });
 

@@ -2,7 +2,7 @@ use eframe::egui::{self, Context, Key};
 
 use crate::{
     KuroyaApp,
-    popup_buttons::{PopupButtonKind, popup_button, popup_button_enabled},
+    popup_buttons::{PopupButtonKind, popup_button_enabled},
     ui_icons::{IconKind, icon_button, icon_label},
 };
 
@@ -13,25 +13,26 @@ mod sections;
 
 use actions::PendingSettingsPanelActions;
 use sections::{
-    SETTINGS_SECTION_EDITOR, SETTINGS_SECTION_FILES, SETTINGS_SECTION_FONTS,
+    SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_EDITOR, SETTINGS_SECTION_FILES,
     SETTINGS_SECTION_GENERAL, SETTINGS_SECTION_TERMINAL, SETTINGS_SECTION_VIM, SETTINGS_SECTIONS,
-    SETTINGS_TARGET_EDITOR_CODE_VIEW, SETTINGS_TARGET_EDITOR_CURSOR, SETTINGS_TARGET_EDITOR_DIFF,
-    SETTINGS_TARGET_EDITOR_DISPLAY, SETTINGS_TARGET_EDITOR_LANGUAGE,
+    SETTINGS_TARGET_APPEARANCE, SETTINGS_TARGET_EDITOR_CODE_VIEW, SETTINGS_TARGET_EDITOR_CURSOR,
+    SETTINGS_TARGET_EDITOR_DIFF, SETTINGS_TARGET_EDITOR_DISPLAY, SETTINGS_TARGET_EDITOR_LANGUAGE,
     SETTINGS_TARGET_EDITOR_SOURCE_CONTROL, SETTINGS_TARGET_EDITOR_TEXT_LAYOUT,
     SETTINGS_TARGET_EDITOR_TYPING, SETTINGS_TARGET_FILES_SAVE_ACTIONS,
-    SETTINGS_TARGET_FILES_SAVE_CLEANUP, SETTINGS_TARGET_FONTS, SETTINGS_TARGET_GENERAL,
-    SETTINGS_TARGET_TERMINAL_BUFFER, SETTINGS_TARGET_TERMINAL_COLOR,
-    SETTINGS_TARGET_TERMINAL_CURSOR, SETTINGS_TARGET_TERMINAL_INTERACTION,
-    SETTINGS_TARGET_TERMINAL_PROFILE, SETTINGS_TARGET_VIM_KEYBINDINGS, SettingsHighlightState,
-    bounded_settings_singleline_input, render_editor_settings, render_files_settings,
-    render_font_settings, render_general_settings, render_settings_sidebar,
-    render_terminal_settings, render_vim_settings,
+    SETTINGS_TARGET_FILES_SAVE_CLEANUP, SETTINGS_TARGET_GENERAL, SETTINGS_TARGET_TERMINAL_BUFFER,
+    SETTINGS_TARGET_TERMINAL_COLOR, SETTINGS_TARGET_TERMINAL_CURSOR,
+    SETTINGS_TARGET_TERMINAL_INTERACTION, SETTINGS_TARGET_TERMINAL_PROFILE,
+    SETTINGS_TARGET_VIM_KEYBINDINGS, SettingsHighlightState, bounded_settings_singleline_input,
+    render_appearance_settings, render_editor_settings, render_files_settings,
+    render_general_settings, render_settings_sidebar, render_terminal_settings,
+    render_vim_settings, vim_key_capture_active, vim_key_capture_clear,
 };
 
 const SETTINGS_WINDOW_SIZE: [f32; 2] = [620.0, 440.0];
 const SETTINGS_WINDOW_MIN_SIZE: [f32; 2] = [380.0, 320.0];
 const SETTINGS_SIDEBAR_WIDTH: f32 = 142.0;
 const SETTINGS_FOOTER_HEIGHT: f32 = 38.0;
+const SETTINGS_FOOTER_BUTTON_WIDTH: f32 = 78.0;
 const SETTINGS_SEARCH_QUERY_ID: &str = "settings-panel-search-query";
 const SETTINGS_HIGHLIGHT_TARGET_ID: &str = "settings-panel-highlight-target";
 const SETTINGS_PENDING_SCROLL_TARGET_ID: &str = "settings-panel-pending-scroll-target";
@@ -190,6 +191,18 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
         keywords: "vim vi modal mode normal insert command keybindings keyboard",
     },
     SettingsSearchEntry {
+        section: SETTINGS_SECTION_VIM,
+        group: "Vim",
+        title: "Disabled Vim bindings",
+        keywords: "vim disable disabled bindings keys normal mode remove ignore",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_VIM,
+        group: "Vim",
+        title: "Vim overrides",
+        keywords: "vim override overrides remap mapping custom keys command after before",
+    },
+    SettingsSearchEntry {
         section: SETTINGS_SECTION_EDITOR,
         group: "Typing Assistance",
         title: "Read-only",
@@ -224,6 +237,12 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
         group: "Language Features",
         title: "Hover",
         keywords: "lsp hover tooltip delay sticky above long line warning",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_EDITOR,
+        group: "Language Features",
+        title: "LSP servers",
+        keywords: "lsp language server servers command args arguments root markers rust analyzer pyright typescript gopls clangd jdtls intelephense ruby lua dart kotlin swift vue svelte docker terraform powershell",
     },
     SettingsSearchEntry {
         section: SETTINGS_SECTION_EDITOR,
@@ -472,13 +491,25 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
         keywords: "trim final newlines trailing blank lines save cleanup",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_FONTS,
+        section: SETTINGS_SECTION_APPEARANCE,
+        group: "Theme",
+        title: "Theme",
+        keywords: "theme appearance color palette built in custom plugin dropdown",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_APPEARANCE,
+        group: "Theme",
+        title: "Custom theme files",
+        keywords: "theme appearance color palette custom style file toml input",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_APPEARANCE,
         group: "Fonts",
         title: "Editor font file",
         keywords: "font file editor custom choose clear bundled ttf otf",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_FONTS,
+        section: SETTINGS_SECTION_APPEARANCE,
         group: "Fonts",
         title: "UI font file",
         keywords: "font file ui interface custom choose clear bundled ttf otf",
@@ -492,6 +523,7 @@ impl KuroyaApp {
         let mut search_query = settings_panel_search_query(ctx);
         let mut highlighted_target = settings_panel_highlight_target(ctx);
         let mut pending_scroll_target = settings_panel_pending_scroll_target(ctx);
+        let vim_capture_active = vim_key_capture_active(ctx);
 
         egui::Window::new("Settings")
             .collapsible(false)
@@ -501,19 +533,21 @@ impl KuroyaApp {
             .min_size(SETTINGS_WINDOW_MIN_SIZE)
             .max_size(SETTINGS_WINDOW_SIZE)
             .show(ctx, |ui| {
-                if ui.input(|input| input.key_pressed(Key::Escape)) {
-                    if search_query.trim().is_empty() {
-                        actions.close = true;
-                    } else {
-                        search_query.clear();
-                    }
+                if ui.input(|input| input.key_pressed(Key::Escape))
+                    && settings_panel_escape_should_apply(vim_capture_active)
+                {
+                    apply_settings_panel_escape(&mut search_query, &mut actions);
                 }
 
                 self.settings_panel_section = self
                     .settings_panel_section
                     .min(SETTINGS_SECTIONS.len().saturating_sub(1));
 
-                render_settings_search(ui, &mut search_query);
+                render_settings_search(
+                    ui,
+                    &mut search_query,
+                    settings_search_enabled(vim_capture_active),
+                );
                 ui.add_space(6.0);
 
                 let search_query_trimmed = search_query.trim().to_owned();
@@ -529,8 +563,14 @@ impl KuroyaApp {
                     ui.vertical(|ui| {
                         ui.set_width(SETTINGS_SIDEBAR_WIDTH);
                         let previous_section = self.settings_panel_section;
-                        render_settings_sidebar(ui, &mut self.settings_panel_section);
+                        ui.add_enabled_ui(
+                            settings_panel_navigation_enabled(vim_capture_active),
+                            |ui| render_settings_sidebar(ui, &mut self.settings_panel_section),
+                        );
                         if self.settings_panel_section != previous_section {
+                            if previous_section == SETTINGS_SECTION_VIM {
+                                vim_key_capture_clear(ctx);
+                            }
                             highlighted_target = None;
                             pending_scroll_target = None;
                         }
@@ -594,14 +634,18 @@ impl KuroyaApp {
                                             &mut self.settings_panel_draft,
                                             &mut highlight,
                                         ),
-                                        SETTINGS_SECTION_FONTS => render_font_settings(
+                                        SETTINGS_SECTION_APPEARANCE => render_appearance_settings(
                                             ui,
+                                            &mut self.settings_panel_draft,
+                                            &self.workspace.root,
+                                            &self.plugin_themes,
                                             &self.settings_editor_font_path,
                                             &self.settings_ui_font_path,
                                             &mut actions.choose_editor_font,
                                             &mut actions.clear_editor_font,
                                             &mut actions.choose_ui_font,
                                             &mut actions.clear_ui_font,
+                                            &mut actions.status,
                                             &mut highlight,
                                         ),
                                         _ => {}
@@ -616,11 +660,18 @@ impl KuroyaApp {
                     let validation = self.settings_panel_draft_validation();
                     let footer_text = validation.footer_message();
                     let footer_color = if validation.has_warnings() {
-                        egui::Color32::from_rgb(224, 177, 95)
+                        ui.visuals().warn_fg_color
                     } else {
                         ui.visuals().weak_text_color()
                     };
-                    let footer_width = (ui.available_width() - 264.0).max(140.0);
+                    let has_pending_inputs = validation.has_pending_inputs();
+                    let footer_actions_enabled =
+                        settings_panel_footer_actions_enabled(vim_capture_active);
+                    let can_reset = has_pending_inputs
+                        || self.settings_panel_default_candidate() != self.settings;
+                    let footer_action_width =
+                        4.0 * SETTINGS_FOOTER_BUTTON_WIDTH + 4.0 * ui.spacing().item_spacing.x;
+                    let footer_width = (ui.available_width() - footer_action_width).max(0.0);
                     ui.add_sized(
                         [footer_width, ui.spacing().interact_size.y],
                         egui::Label::new(egui::RichText::new(footer_text).color(footer_color))
@@ -629,7 +680,7 @@ impl KuroyaApp {
 
                     if popup_button_enabled(
                         ui,
-                        validation.has_pending_inputs(),
+                        footer_actions_enabled && has_pending_inputs,
                         "Apply",
                         PopupButtonKind::Primary,
                     )
@@ -639,21 +690,41 @@ impl KuroyaApp {
                     }
                     if popup_button_enabled(
                         ui,
-                        validation.has_pending_inputs(),
+                        footer_actions_enabled && can_reset,
                         "Reset",
                         PopupButtonKind::Secondary,
                     )
+                    .on_hover_text("Reset settings to defaults in the draft; Apply saves them")
                     .clicked()
                     {
                         actions.reset = true;
                     }
-                    if popup_button(ui, "Reload", PopupButtonKind::Secondary).clicked() {
+                    if popup_button_enabled(
+                        ui,
+                        footer_actions_enabled,
+                        "Reload",
+                        PopupButtonKind::Secondary,
+                    )
+                    .clicked()
+                    {
                         actions.reload = true;
+                    }
+                    if popup_button_enabled(
+                        ui,
+                        footer_actions_enabled,
+                        settings_panel_close_button_label(has_pending_inputs),
+                        PopupButtonKind::Secondary,
+                    )
+                    .on_hover_text(settings_panel_close_button_hover_text(has_pending_inputs))
+                    .clicked()
+                    {
+                        actions.close = true;
                     }
                 });
             });
 
         if actions.close {
+            vim_key_capture_clear(ctx);
             search_query.clear();
             highlighted_target = None;
             pending_scroll_target = None;
@@ -671,6 +742,49 @@ fn settings_window_size(ctx: &Context) -> [f32; 2] {
         SETTINGS_WINDOW_SIZE[0].min((available.x - 32.0).max(SETTINGS_WINDOW_MIN_SIZE[0])),
         SETTINGS_WINDOW_SIZE[1].min((available.y - 96.0).max(SETTINGS_WINDOW_MIN_SIZE[1])),
     ]
+}
+
+fn settings_panel_close_button_label(has_pending_inputs: bool) -> &'static str {
+    if has_pending_inputs {
+        "Cancel"
+    } else {
+        "Close"
+    }
+}
+
+fn settings_panel_close_button_hover_text(has_pending_inputs: bool) -> &'static str {
+    if has_pending_inputs {
+        "Close settings without applying changes"
+    } else {
+        "Close settings"
+    }
+}
+
+fn apply_settings_panel_escape(
+    search_query: &mut String,
+    actions: &mut PendingSettingsPanelActions,
+) {
+    if search_query.trim().is_empty() {
+        actions.close = true;
+    } else {
+        search_query.clear();
+    }
+}
+
+fn settings_panel_escape_should_apply(vim_capture_active: bool) -> bool {
+    !vim_capture_active
+}
+
+fn settings_search_enabled(vim_capture_active: bool) -> bool {
+    !vim_capture_active
+}
+
+fn settings_panel_navigation_enabled(vim_capture_active: bool) -> bool {
+    !vim_capture_active
+}
+
+fn settings_panel_footer_actions_enabled(vim_capture_active: bool) -> bool {
+    !vim_capture_active
 }
 
 fn settings_panel_search_query(ctx: &Context) -> String {
@@ -712,7 +826,7 @@ fn set_settings_panel_pending_scroll_target(ctx: &Context, target: Option<String
     });
 }
 
-fn render_settings_search(ui: &mut egui::Ui, query: &mut String) {
+fn render_settings_search(ui: &mut egui::Ui, query: &mut String, enabled: bool) {
     let sanitized = bounded_settings_singleline_input(query);
     if sanitized != *query {
         *query = sanitized;
@@ -731,13 +845,20 @@ fn render_settings_search(ui: &mut egui::Ui, query: &mut String) {
             ui.spacing().interact_size.y + ui.spacing().item_spacing.x
         };
         let search_width = (ui.available_width() - clear_button_width).max(120.0);
-        let search_response = ui.add_sized(
-            [search_width, ui.spacing().interact_size.y],
-            egui::TextEdit::singleline(query)
-                .hint_text("Search settings")
-                .clip_text(true),
-        );
-        if !query.is_empty() && icon_button(ui, IconKind::Close, "Clear search").clicked() {
+        let search_response = ui
+            .add_enabled_ui(enabled, |ui| {
+                ui.add_sized(
+                    [search_width, ui.spacing().interact_size.y],
+                    egui::TextEdit::singleline(query)
+                        .hint_text("Search settings")
+                        .clip_text(true),
+                )
+            })
+            .inner;
+        if enabled
+            && !query.is_empty()
+            && icon_button(ui, IconKind::Close, "Clear search").clicked()
+        {
             query.clear();
             search_response.request_focus();
         }
@@ -834,7 +955,7 @@ fn settings_search_entry_target(entry: SettingsSearchEntry) -> &'static str {
         (SETTINGS_SECTION_TERMINAL, "Interaction") => SETTINGS_TARGET_TERMINAL_INTERACTION,
         (SETTINGS_SECTION_FILES, "Save Actions") => SETTINGS_TARGET_FILES_SAVE_ACTIONS,
         (SETTINGS_SECTION_FILES, "Save Cleanup") => SETTINGS_TARGET_FILES_SAVE_CLEANUP,
-        (SETTINGS_SECTION_FONTS, _) => SETTINGS_TARGET_FONTS,
+        (SETTINGS_SECTION_APPEARANCE, _) => SETTINGS_TARGET_APPEARANCE,
         _ => SETTINGS_TARGET_GENERAL,
     }
 }
@@ -873,10 +994,15 @@ fn settings_search_entry_matches(entry: &SettingsSearchEntry, tokens: &[String])
 
 #[cfg(test)]
 mod tests {
+    use super::actions::PendingSettingsPanelActions;
     use super::{
-        SETTINGS_SECTION_TERMINAL, SETTINGS_SECTION_VIM, SETTINGS_TARGET_TERMINAL_INTERACTION,
-        SETTINGS_TARGET_VIM_KEYBINDINGS, settings_search_count_label, settings_search_entry_target,
-        settings_search_results, settings_search_tokens,
+        SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_EDITOR, SETTINGS_SECTION_TERMINAL,
+        SETTINGS_SECTION_VIM, SETTINGS_TARGET_APPEARANCE, SETTINGS_TARGET_TERMINAL_INTERACTION,
+        SETTINGS_TARGET_VIM_KEYBINDINGS, apply_settings_panel_escape,
+        settings_panel_close_button_hover_text, settings_panel_close_button_label,
+        settings_panel_escape_should_apply, settings_panel_footer_actions_enabled,
+        settings_panel_navigation_enabled, settings_search_count_label, settings_search_enabled,
+        settings_search_entry_target, settings_search_results, settings_search_tokens,
     };
 
     #[test]
@@ -889,6 +1015,24 @@ mod tests {
     }
 
     #[test]
+    fn settings_search_finds_all_vim_binding_entries() {
+        for (query, title) in [
+            ("vim disable binding", "Disabled Vim bindings"),
+            ("vim override remap", "Vim overrides"),
+            ("vim custom command", "Vim overrides"),
+        ] {
+            let results = settings_search_results(query);
+
+            assert!(
+                results
+                    .iter()
+                    .any(|entry| entry.section == SETTINGS_SECTION_VIM && entry.title == title),
+                "{query:?} should find {title:?}"
+            );
+        }
+    }
+
+    #[test]
     fn settings_search_finds_terminal_right_click() {
         let results = settings_search_results("terminal right click");
 
@@ -898,23 +1042,65 @@ mod tests {
     }
 
     #[test]
+    fn settings_search_finds_lsp_servers() {
+        let results = settings_search_results("lsp server");
+
+        assert!(results.iter().any(|entry| {
+            entry.section == SETTINGS_SECTION_EDITOR && entry.title == "LSP servers"
+        }));
+    }
+
+    #[test]
+    fn settings_search_finds_appearance_themes() {
+        let results = settings_search_results("custom theme");
+
+        assert!(results.iter().any(|entry| {
+            entry.section == SETTINGS_SECTION_APPEARANCE && entry.title == "Custom theme files"
+        }));
+    }
+
+    #[test]
     fn settings_search_entries_resolve_to_scroll_targets() {
         let vim = settings_search_results("vim")
             .into_iter()
             .find(|entry| entry.title == "Vim keybindings")
             .expect("vim search result");
+        let disabled_vim = settings_search_results("vim disabled")
+            .into_iter()
+            .find(|entry| entry.title == "Disabled Vim bindings")
+            .expect("disabled vim search result");
+        let vim_overrides = settings_search_results("vim override")
+            .into_iter()
+            .find(|entry| entry.title == "Vim overrides")
+            .expect("vim override search result");
         let right_click = settings_search_results("terminal right click")
             .into_iter()
             .find(|entry| entry.title == "Right click")
             .expect("terminal right click result");
+        let custom_theme = settings_search_results("custom theme")
+            .into_iter()
+            .find(|entry| entry.title == "Custom theme files")
+            .expect("custom theme result");
 
         assert_eq!(
             settings_search_entry_target(vim),
             SETTINGS_TARGET_VIM_KEYBINDINGS
         );
         assert_eq!(
+            settings_search_entry_target(disabled_vim),
+            SETTINGS_TARGET_VIM_KEYBINDINGS
+        );
+        assert_eq!(
+            settings_search_entry_target(vim_overrides),
+            SETTINGS_TARGET_VIM_KEYBINDINGS
+        );
+        assert_eq!(
             settings_search_entry_target(right_click),
             SETTINGS_TARGET_TERMINAL_INTERACTION
+        );
+        assert_eq!(
+            settings_search_entry_target(custom_theme),
+            SETTINGS_TARGET_APPEARANCE
         );
     }
 
@@ -936,5 +1122,58 @@ mod tests {
     fn settings_search_count_label_uses_singular_and_plural() {
         assert_eq!(settings_search_count_label(1), "1 result");
         assert_eq!(settings_search_count_label(2), "2 results");
+    }
+
+    #[test]
+    fn settings_close_button_reflects_pending_inputs() {
+        assert_eq!(settings_panel_close_button_label(false), "Close");
+        assert_eq!(
+            settings_panel_close_button_hover_text(false),
+            "Close settings"
+        );
+        assert_eq!(settings_panel_close_button_label(true), "Cancel");
+        assert_eq!(
+            settings_panel_close_button_hover_text(true),
+            "Close settings without applying changes"
+        );
+    }
+
+    #[test]
+    fn settings_escape_clears_search_before_closing() {
+        let mut query = "vim".to_owned();
+        let mut actions = PendingSettingsPanelActions::default();
+
+        apply_settings_panel_escape(&mut query, &mut actions);
+
+        assert!(query.is_empty());
+        assert!(!actions.close);
+
+        apply_settings_panel_escape(&mut query, &mut actions);
+
+        assert!(actions.close);
+    }
+
+    #[test]
+    fn settings_escape_is_blocked_while_vim_key_capture_is_active() {
+        assert!(settings_panel_escape_should_apply(false));
+        assert!(!settings_panel_escape_should_apply(true));
+    }
+
+    #[test]
+    fn settings_search_is_disabled_while_vim_key_capture_is_active() {
+        assert!(settings_search_enabled(false));
+        assert!(!settings_search_enabled(true));
+    }
+
+    #[test]
+    fn settings_navigation_is_disabled_while_vim_key_capture_is_active() {
+        assert!(settings_panel_navigation_enabled(false));
+        assert!(!settings_panel_navigation_enabled(true));
+    }
+
+    #[test]
+    fn settings_footer_actions_are_disabled_while_vim_key_capture_is_active() {
+        assert!(settings_panel_footer_actions_enabled(false));
+        assert!(!settings_panel_footer_actions_enabled(true));
     }
 }

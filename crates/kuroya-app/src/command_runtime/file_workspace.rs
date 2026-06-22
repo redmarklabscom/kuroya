@@ -1,12 +1,20 @@
-use crate::{KuroyaApp, path_display::sanitized_display_label_cow};
+use crate::{
+    KuroyaApp,
+    devtools_async_tasks::plugin_command_task_detail,
+    path_display::{display_error_label_cow, sanitized_display_label_cow},
+    plugin_command_runtime::{PluginCommandExecution, execute_plugin_command},
+    ui_events::UiEvent,
+};
 use kuroya_core::{
     Command, PluginActivationRecord, PluginActivationState, PluginCommandRegistry,
-    PluginRuntimeRegistry, TextBuffer,
+    PluginRuntimeRegistration, PluginRuntimeRegistry, TextBuffer,
 };
 use std::borrow::Cow;
 
 const PLUGIN_COMMAND_STATUS_FRAGMENT_MAX_CHARS: usize = 96;
+#[cfg(test)]
 const PLUGIN_COMMAND_STATUS_ENTRY_MAX_CHARS: usize = 120;
+const PLUGIN_COMMAND_STATUS_ERROR_MAX_CHARS: usize = 160;
 
 pub(super) fn run_file_workspace_command(app: &mut KuroyaApp, command: Command) -> Option<Command> {
     match command {
@@ -203,13 +211,7 @@ pub(super) fn run_file_workspace_command(app: &mut KuroyaApp, command: Command) 
             plugin_id,
             command_id,
         } => {
-            app.status = plugin_command_status(
-                &app.plugin_commands,
-                &app.plugin_runtimes,
-                &mut app.plugin_activations,
-                &plugin_id,
-                &command_id,
-            );
+            app.run_plugin_command(plugin_id, command_id);
             None
         }
         Command::SaveActive => {
@@ -240,6 +242,58 @@ pub(super) fn run_file_workspace_command(app: &mut KuroyaApp, command: Command) 
     }
 }
 
+impl KuroyaApp {
+    pub(crate) fn run_plugin_command(&mut self, plugin_id: String, command_id: String) {
+        let prepared = prepare_plugin_command_run(
+            &self.plugin_commands,
+            &self.plugin_runtimes,
+            &mut self.plugin_activations,
+            &plugin_id,
+            &command_id,
+        );
+        self.status = prepared.status;
+        let Some(runtime) = prepared.runtime else {
+            return;
+        };
+
+        let root = self.workspace.root.clone();
+        let generation = self.workspace_event_generation;
+        let tx = self.tx.clone();
+        self.record_async_task_started("Plugin Command", plugin_command_task_detail(&command_id));
+        self.runtime.spawn_blocking(move || {
+            let result =
+                execute_plugin_command(&runtime, &command_id).map_err(|error| error.to_string());
+            let _ = crate::ui_event_channel::send_critical_ui_event(
+                &tx,
+                UiEvent::PluginCommandFinished {
+                    root,
+                    generation,
+                    plugin_id,
+                    command_id,
+                    result,
+                },
+            );
+        });
+    }
+
+    pub(crate) fn apply_plugin_command_finished(
+        &mut self,
+        plugin_id: String,
+        command_id: String,
+        result: Result<PluginCommandExecution, String>,
+    ) {
+        self.status =
+            plugin_command_finished_status(&self.plugin_commands, &plugin_id, &command_id, result);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedPluginCommand {
+    status: String,
+    runtime: Option<PluginRuntimeRegistration>,
+}
+
+#[cfg(test)]
 pub(crate) fn plugin_command_status(
     registry: &PluginCommandRegistry,
     runtimes: &PluginRuntimeRegistry,
@@ -247,32 +301,99 @@ pub(crate) fn plugin_command_status(
     plugin_id: &str,
     command_id: &str,
 ) -> String {
+    prepare_plugin_command_run(registry, runtimes, activations, plugin_id, command_id).status
+}
+
+fn prepare_plugin_command_run(
+    registry: &PluginCommandRegistry,
+    runtimes: &PluginRuntimeRegistry,
+    activations: &mut PluginActivationState,
+    plugin_id: &str,
+    command_id: &str,
+) -> PreparedPluginCommand {
     let Some(command) = registry.command(plugin_id, command_id) else {
         let plugin_id = plugin_command_status_fragment(plugin_id, "plugin");
         let command_id = plugin_command_status_fragment(command_id, "command");
-        return format!("Plugin command {plugin_id}:{command_id} is not registered");
+        return PreparedPluginCommand {
+            status: format!("Plugin command {plugin_id}:{command_id} is not registered"),
+            runtime: None,
+        };
     };
     let command_label = plugin_command_status_fragment(&command.label, "plugin command");
     let plugin_label = plugin_command_status_fragment(plugin_id, "plugin");
     let Some(runtime) = runtimes.plugin(plugin_id) else {
-        return format!(
-            "Plugin command {command_label} is registered; runtime metadata for {plugin_label} is unavailable"
-        );
+        return PreparedPluginCommand {
+            status: format!(
+                "Plugin command {command_label} is registered; runtime metadata for {plugin_label} is unavailable"
+            ),
+            runtime: None,
+        };
     };
-    let activated = activations.activate_command(runtimes, command_id);
+    let runtime = runtime.clone();
+    let activated = activations.activate_plugin_command(runtimes, plugin_id, command_id);
     let activation =
         plugin_command_activation_status(&activated, activations, plugin_id, &runtime.name);
-    if let Some(entry) = runtime.command_entry() {
-        let entry_display = entry.as_os_str().to_string_lossy();
-        let entry = plugin_command_entry_status_fragment(entry_display.as_ref());
-        format!(
-            "Plugin command {command_label} {activation}; sandboxed execution from {entry} is not enabled yet"
-        )
+    if runtime.command_entry().is_some() {
+        PreparedPluginCommand {
+            status: format!(
+                "Plugin command {command_label} {activation}; running sandboxed plugin"
+            ),
+            runtime: Some(runtime),
+        }
     } else {
-        format!(
-            "Plugin command {command_label} {activation}; plugin {plugin_label} has no sandbox entry"
-        )
+        PreparedPluginCommand {
+            status: format!(
+                "Plugin command {command_label} {activation}; plugin {plugin_label} has no sandbox entry"
+            ),
+            runtime: None,
+        }
     }
+}
+
+pub(crate) fn plugin_command_finished_status(
+    registry: &PluginCommandRegistry,
+    plugin_id: &str,
+    command_id: &str,
+    result: Result<PluginCommandExecution, String>,
+) -> String {
+    let command_label = plugin_command_label_for_status(registry, plugin_id, command_id);
+    match result {
+        Ok(execution) => plugin_command_success_status(&command_label, execution),
+        Err(error) => {
+            let error = plugin_command_error_status_fragment(&error);
+            format!("Plugin command {command_label} failed: {error}")
+        }
+    }
+}
+
+fn plugin_command_success_status(command_label: &str, execution: PluginCommandExecution) -> String {
+    match (execution.exit_code, execution.status) {
+        (0, Some(status)) => format!("Plugin command {command_label} completed: {status}"),
+        (0, None) => format!("Plugin command {command_label} completed"),
+        (exit_code, Some(status)) => {
+            format!("Plugin command {command_label} failed with exit code {exit_code}: {status}")
+        }
+        (exit_code, None) => {
+            format!("Plugin command {command_label} failed with exit code {exit_code}")
+        }
+    }
+}
+
+fn plugin_command_label_for_status(
+    registry: &PluginCommandRegistry,
+    plugin_id: &str,
+    command_id: &str,
+) -> String {
+    registry
+        .command(plugin_id, command_id)
+        .map(|command| plugin_command_status_fragment(&command.label, "plugin command"))
+        .unwrap_or_else(|| {
+            format!(
+                "{}:{}",
+                plugin_command_status_fragment(plugin_id, "plugin"),
+                plugin_command_status_fragment(command_id, "command")
+            )
+        })
 }
 
 fn plugin_command_activation_status(
@@ -299,12 +420,26 @@ fn plugin_command_status_fragment_cow<'a>(value: &'a str, fallback: &str) -> Cow
     sanitized_display_label_cow(value, PLUGIN_COMMAND_STATUS_FRAGMENT_MAX_CHARS, fallback)
 }
 
+#[cfg(test)]
 fn plugin_command_entry_status_fragment(value: &str) -> String {
     plugin_command_entry_status_fragment_cow(value).into_owned()
 }
 
+#[cfg(test)]
 fn plugin_command_entry_status_fragment_cow(value: &str) -> Cow<'_, str> {
     sanitized_display_label_cow(value, PLUGIN_COMMAND_STATUS_ENTRY_MAX_CHARS, ".")
+}
+
+fn plugin_command_error_status_fragment(value: &str) -> Cow<'_, str> {
+    if value.chars().count() <= PLUGIN_COMMAND_STATUS_ERROR_MAX_CHARS {
+        display_error_label_cow(value)
+    } else {
+        sanitized_display_label_cow(
+            value,
+            PLUGIN_COMMAND_STATUS_ERROR_MAX_CHARS,
+            "unknown error",
+        )
+    }
 }
 
 #[cfg(test)]
@@ -312,8 +447,10 @@ mod tests {
     use super::{
         PLUGIN_COMMAND_STATUS_ENTRY_MAX_CHARS, PLUGIN_COMMAND_STATUS_FRAGMENT_MAX_CHARS,
         plugin_command_entry_status_fragment, plugin_command_entry_status_fragment_cow,
-        plugin_command_status, plugin_command_status_fragment, plugin_command_status_fragment_cow,
+        plugin_command_finished_status, plugin_command_status, plugin_command_status_fragment,
+        plugin_command_status_fragment_cow,
     };
+    use crate::plugin_command_runtime::PluginCommandExecution;
     use kuroya_core::{
         PLUGIN_API_VERSION, PluginActivationState, PluginCapabilities, PluginCommandContribution,
         PluginCommandRegistry, PluginContributions, PluginDescriptor, PluginManifest,
@@ -359,7 +496,7 @@ mod tests {
                 "example.plugin",
                 "example.sayHello"
             ),
-            "Plugin command Example: Say Hello activated plugin Example; plugin example.plugin has no sandbox entry"
+            "Plugin command example.plugin:example.sayHello is not registered"
         );
         assert_eq!(
             plugin_command_status(
@@ -369,7 +506,7 @@ mod tests {
                 "example.plugin",
                 "example.sayHello"
             ),
-            "Plugin command Example: Say Hello found plugin Example already active; plugin example.plugin has no sandbox entry"
+            "Plugin command example.plugin:example.sayHello is not registered"
         );
         assert_eq!(
             plugin_command_status(
@@ -422,7 +559,7 @@ mod tests {
                 "example.plugin",
                 "example.sayHello"
             ),
-            "Plugin command Example: Say Hello activated plugin Example; sandboxed execution from workspace/.kuroya/plugins/example/plugin.wasm is not enabled yet"
+            "Plugin command Example: Say Hello activated plugin Example; running sandboxed plugin"
         );
     }
 
@@ -497,11 +634,75 @@ mod tests {
             status.chars().count()
                 <= "Plugin command ".chars().count()
                     + " activated plugin ".chars().count()
-                    + "; sandboxed execution from ".chars().count()
-                    + " is not enabled yet".chars().count()
+                    + "; running sandboxed plugin".chars().count()
                     + PLUGIN_COMMAND_STATUS_FRAGMENT_MAX_CHARS * 2
-                    + PLUGIN_COMMAND_STATUS_ENTRY_MAX_CHARS
         );
+    }
+
+    #[test]
+    fn plugin_command_finished_status_reports_success_failure_and_runtime_errors() {
+        let plugin = PluginDescriptor {
+            root: PathBuf::from("workspace/.kuroya/plugins/example"),
+            manifest: PluginManifest {
+                api_version: PLUGIN_API_VERSION.to_owned(),
+                id: "example.plugin".to_owned(),
+                name: "Example".to_owned(),
+                version: "0.1.0".to_owned(),
+                entry: Some(PathBuf::from(
+                    "workspace/.kuroya/plugins/example/plugin.wasm",
+                )),
+                activation_events: Vec::new(),
+                capabilities: PluginCapabilities {
+                    commands: true,
+                    ..PluginCapabilities::default()
+                },
+                contributes: PluginContributions {
+                    commands: vec![PluginCommandContribution {
+                        id: "example.sayHello".to_owned(),
+                        title: "Say Hello".to_owned(),
+                        category: None,
+                    }],
+                    ..PluginContributions::default()
+                },
+            },
+        };
+        let registry = PluginCommandRegistry::from_plugins(std::slice::from_ref(&plugin));
+
+        assert_eq!(
+            plugin_command_finished_status(
+                &registry,
+                "example.plugin",
+                "example.sayHello",
+                Ok(PluginCommandExecution {
+                    exit_code: 0,
+                    status: Some("done".to_owned()),
+                    used_default_export: false,
+                }),
+            ),
+            "Plugin command Example: Say Hello completed: done"
+        );
+        assert_eq!(
+            plugin_command_finished_status(
+                &registry,
+                "example.plugin",
+                "example.sayHello",
+                Ok(PluginCommandExecution {
+                    exit_code: 5,
+                    status: None,
+                    used_default_export: false,
+                }),
+            ),
+            "Plugin command Example: Say Hello failed with exit code 5"
+        );
+
+        let error_status = plugin_command_finished_status(
+            &PluginCommandRegistry::default(),
+            "unsafe\nplugin",
+            "run\u{202e}",
+            Err(format!("boom\n{}\u{202e}", "x".repeat(256))),
+        );
+        assert_status_display_safe(&error_status);
+        assert!(error_status.contains("..."));
     }
 
     #[test]

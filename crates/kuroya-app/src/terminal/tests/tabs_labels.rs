@@ -239,10 +239,13 @@ fn terminal_session_labels_stay_shell_based_in_split_mode() {
 fn terminal_agent_cli_title_setting_controls_tab_label() {
     let size = test_terminal_size();
     let mut session = session_without_command(1, size);
-    session.parser.process(b"\x1b]2;Codex\x07");
+    session.parser.process(b"\x1b]2;Task Runner\x07");
     let mut pane = pane_with_sessions(vec![session], size);
 
-    assert_eq!(pane.terminal_session_label(&pane.sessions[0]), "Codex");
+    assert_eq!(
+        pane.terminal_session_label(&pane.sessions[0]),
+        "Task Runner"
+    );
 
     pane.set_tabs_allow_agent_cli_title(false);
     assert_eq!(pane.terminal_session_label(&pane.sessions[0]), "Terminal");
@@ -301,7 +304,7 @@ fn terminal_custom_title_overrides_shell_and_sequence_labels() {
     let mut session = session_without_command(2, size);
     session.custom_title = Some("  Build\r\n\u{202e}Main  ".to_owned());
     session.process_label = Some("Cargo".to_owned());
-    session.parser.process(b"\x1b]2;Codex\x07");
+    session.parser.process(b"\x1b]2;Task Runner\x07");
     let pane = pane_with_sessions(vec![session], size);
 
     assert_eq!(pane.terminal_session_label(&pane.sessions[0]), "Build Main");
@@ -325,14 +328,14 @@ fn terminal_tabs_title_template_controls_tab_label() {
     let size = test_terminal_size();
     let mut session = session_without_command(2, size);
     session.initial_cwd = Some(PathBuf::from("workspace/tools"));
-    session.parser.process(b"\x1b]2;Codex\x07");
+    session.parser.process(b"\x1b]2;Task Runner\x07");
     let mut pane = pane_with_sessions(vec![session], size);
 
     pane.set_tabs_title_template("${process}:${sequence}:${cwd}:${workspaceFolderName}");
 
     assert_eq!(
         pane.terminal_session_label(&pane.sessions[0]),
-        "Terminal:Codex:workspace/tools:workspace"
+        "Terminal:Task Runner:workspace/tools:workspace"
     );
 
     pane.set_tabs_allow_agent_cli_title(false);

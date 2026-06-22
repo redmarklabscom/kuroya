@@ -2,8 +2,9 @@ use crate::{
     KuroyaApp,
     keybindings_panel_actions::PendingKeybindingsPanelActions,
     popup_buttons::{PopupButtonKind, popup_button, popup_button_enabled},
+    ui_icons::{IconKind, icon_button},
 };
-use eframe::egui::{Color32, RichText, Ui};
+use eframe::egui::{RichText, Ui};
 use std::fmt::Write;
 
 use super::{KeybindingPanelItem, controls};
@@ -22,22 +23,36 @@ pub(super) fn render_keybinding_buttons(
             controls::bound_command_for_selected_index(app.keybindings_selected, items);
         let can_edit = !capturing && selected_command.is_some();
         let can_remove = !capturing && selected_bound_command.is_some();
-        if popup_button_enabled(ui, can_edit, "Edit", PopupButtonKind::Primary).clicked() {
+        if ui
+            .add_enabled_ui(can_edit, |ui| {
+                icon_button(
+                    ui,
+                    IconKind::Keyboard,
+                    "Capture shortcut for selected command",
+                )
+            })
+            .inner
+            .clicked()
+        {
             actions.start_capture = selected_command;
         }
-        if popup_button_enabled(ui, can_remove, "Remove", PopupButtonKind::Danger).clicked() {
+        if popup_button_enabled(ui, can_remove, "Clear", PopupButtonKind::Danger)
+            .on_hover_text("Remove the selected command's shortcut")
+            .clicked()
+        {
             actions.remove_binding = selected_bound_command;
         }
         if popup_button(ui, "Open Settings", PopupButtonKind::Secondary).clicked() {
             actions.open_settings = true;
         }
+        let count_color = ui.visuals().weak_text_color();
         ui.label(
             RichText::new(keybinding_result_count_label(
                 items.len(),
                 &app.keybindings_query,
             ))
             .small()
-            .color(Color32::from_rgb(126, 136, 150)),
+            .color(count_color),
         );
     });
 }

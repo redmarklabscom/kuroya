@@ -20,7 +20,23 @@ use kuroya_core::{
     keymap::{KeyBinding, Keymap},
 };
 use std::collections::{BTreeMap, VecDeque};
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+static COMMAND_PALETTE_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn command_palette_temp_suffix() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = COMMAND_PALETTE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{nanos}-{counter}", std::process::id())
+}
 
 #[test]
 fn command_palette_items_surface_shortcuts_and_workspace_actions() {
@@ -48,6 +64,9 @@ fn command_palette_items_surface_shortcuts_and_workspace_actions() {
     }));
     assert!(items.iter().any(|(label, command, _)| {
         label == "Toggle Sticky Scroll" && command == &Command::ToggleStickyScroll
+    }));
+    assert!(items.iter().any(|(label, command, _)| {
+        label == "Toggle Vim Mode" && command == &Command::ToggleVimMode
     }));
     assert!(items.iter().any(|(label, command, _)| {
         label == "Save Workspace Snapshot" && command == &Command::SaveWorkspaceSnapshot
@@ -344,22 +363,15 @@ fn command_palette_items_include_each_catalog_command_once() {
 
 #[test]
 fn command_palette_items_include_existing_recent_workspaces() {
-    let root = env::temp_dir().join(format!(
-        "kuroya-command-palette-current-{}",
-        std::process::id()
-    ));
-    let recent_a = env::temp_dir().join(format!(
-        "kuroya-command-palette-recent-a-{}",
-        std::process::id()
-    ));
-    let recent_b = env::temp_dir().join(format!(
-        "kuroya-command-palette-recent-b-{}",
-        std::process::id()
-    ));
-    let stale = env::temp_dir().join(format!(
-        "kuroya-command-palette-stale-{}",
-        std::process::id()
-    ));
+    let suffix = command_palette_temp_suffix();
+    let root = env::temp_dir().join(format!("kuroya-command-palette-current-{suffix}"));
+    let recent_a = env::temp_dir().join(format!("kuroya-command-palette-recent-a-{suffix}"));
+    let recent_b = env::temp_dir().join(format!("kuroya-command-palette-recent-b-{suffix}"));
+    let stale = env::temp_dir().join(format!("kuroya-command-palette-stale-{suffix}"));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&recent_a);
+    let _ = std::fs::remove_dir_all(&recent_b);
+    let _ = std::fs::remove_dir_all(&stale);
     std::fs::create_dir_all(&root).unwrap();
     std::fs::create_dir_all(&recent_a).unwrap();
     std::fs::create_dir_all(&recent_b).unwrap();
@@ -402,21 +414,19 @@ fn command_palette_items_include_existing_recent_workspaces() {
         1
     );
 
-    std::fs::remove_dir_all(root).unwrap();
-    std::fs::remove_dir_all(recent_a).unwrap();
-    std::fs::remove_dir_all(recent_b).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&recent_a);
+    let _ = std::fs::remove_dir_all(&recent_b);
+    let _ = std::fs::remove_dir_all(&stale);
 }
 
 #[test]
 fn command_palette_recent_workspaces_skip_lexically_current_and_dedupe_equivalents() {
-    let root = env::temp_dir().join(format!(
-        "kuroya-command-palette-current-{}",
-        std::process::id()
-    ));
-    let recent = env::temp_dir().join(format!(
-        "kuroya-command-palette-recent-{}",
-        std::process::id()
-    ));
+    let suffix = command_palette_temp_suffix();
+    let root = env::temp_dir().join(format!("kuroya-command-palette-current-{suffix}"));
+    let recent = env::temp_dir().join(format!("kuroya-command-palette-recent-{suffix}"));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&recent);
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(&recent).unwrap();
 
@@ -454,8 +464,8 @@ fn command_palette_recent_workspaces_skip_lexically_current_and_dedupe_equivalen
         1
     );
 
-    std::fs::remove_dir_all(root).unwrap();
-    std::fs::remove_dir_all(recent).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&recent);
 }
 
 #[test]
@@ -748,14 +758,15 @@ fn plugin_descriptor(
     commands: bool,
     command_contributions: Vec<PluginCommandContribution>,
 ) -> PluginDescriptor {
+    let root = PathBuf::from("workspace/.kuroya/plugins").join(id);
     PluginDescriptor {
-        root: PathBuf::from("workspace/.kuroya/plugins").join(id),
+        root: root.clone(),
         manifest: PluginManifest {
             api_version: "1".to_owned(),
             id: id.to_owned(),
             name: name.to_owned(),
             version: "0.1.0".to_owned(),
-            entry: None,
+            entry: commands.then(|| root.join("plugin.wasm")),
             activation_events: Vec::new(),
             capabilities: PluginCapabilities {
                 commands,

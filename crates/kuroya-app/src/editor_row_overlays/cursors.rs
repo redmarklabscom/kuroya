@@ -45,7 +45,7 @@ pub(crate) fn paint_cursors(
         );
         let cursor_rect = animated_cursor_rect(ui.ctx(), row, cursor_slot, cursor_rect);
         let cursor_x = cursor_rect.left();
-        let color = Color32::from_rgb(222, 226, 233);
+        let color = ui.visuals().text_color();
         let full_height = (row.row_height - 4.0).max(1.0);
         match row.cursor_style {
             EditorCursorStyle::Line | EditorCursorStyle::LineThin => {

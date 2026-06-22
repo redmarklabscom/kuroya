@@ -2,11 +2,12 @@ use super::rows::KEYBINDING_ROW_HEIGHT;
 use crate::{
     KuroyaApp,
     commands::command_label,
+    keybinding_input::CapturedKeybinding,
     keybindings_panel_actions::PendingKeybindingsPanelActions,
-    popup_buttons::{PopupButtonKind, popup_button},
+    ui_icons::{IconKind, icon_button},
     ui_state::{handle_list_navigation_keys, plain_key_pressed, selection_page_step},
 };
-use eframe::egui::{Key, TextEdit, Ui};
+use eframe::egui::{self, Key, TextEdit, Ui};
 use kuroya_core::Command;
 
 use super::KeybindingPanelItem;
@@ -18,25 +19,38 @@ pub(super) fn render_keybinding_controls(
     capturing: bool,
     actions: &mut PendingKeybindingsPanelActions,
 ) -> bool {
-    render_capture_or_search(app, ui);
+    render_capture_or_search(app, ui, actions);
     handle_keyboard_navigation(app, ui, items, capturing, actions)
 }
 
-fn render_capture_or_search(app: &mut KuroyaApp, ui: &mut Ui) {
+fn render_capture_or_search(
+    app: &mut KuroyaApp,
+    ui: &mut Ui,
+    actions: &mut PendingKeybindingsPanelActions,
+) {
     if let Some(label) = app.keybinding_capture_command.as_ref().map(command_label) {
-        ui.horizontal(|ui| {
-            ui.label("Press shortcut for");
-            ui.label(label);
-            if popup_button(ui, "Cancel", PopupButtonKind::Secondary).clicked() {
-                app.keybinding_capture_command = None;
-            }
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Capturing shortcut for");
+                ui.label(egui::RichText::new(label).strong());
+                if icon_button(ui, IconKind::Close, "Cancel shortcut capture").clicked() {
+                    actions.captured = Some(CapturedKeybinding::Cancel);
+                }
+            });
+            ui.label(
+                egui::RichText::new(
+                    "Press a shortcut. Esc sets Escape; Esc twice cancels. Text keys require Ctrl, Alt, or Cmd.",
+                )
+                .small()
+                .color(ui.visuals().weak_text_color()),
+            );
         });
         return;
     }
 
     let response = ui.add(
         TextEdit::singleline(&mut app.keybindings_query)
-            .hint_text("Search command or shortcut")
+            .hint_text("Search command or shortcut; Enter captures the selected command")
             .desired_width(f32::INFINITY),
     );
     response.request_focus();

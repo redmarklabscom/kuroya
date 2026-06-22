@@ -3,10 +3,18 @@ use eframe::egui::{
     self, Align2, Color32, ColorImage, FontId, Rect, TextureOptions, Ui, pos2, vec2,
 };
 use image::{ImageReader, Limits};
-use std::{io::Cursor, path::Path};
+use kuroya_core::BufferId;
+use std::{
+    collections::{HashMap, HashSet},
+    io::Cursor,
+    path::Path,
+};
 
-const IMAGE_PREVIEW_MAX_PIXELS: u64 = 64_000_000;
-const IMAGE_PREVIEW_MAX_SIDE: u32 = 32_768;
+const IMAGE_PREVIEW_MAX_PIXELS: u64 = 4096 * 4096;
+const IMAGE_PREVIEW_MAX_RGBA_BYTES: u64 = IMAGE_PREVIEW_MAX_PIXELS * 4;
+// Keep room for the active image plus one newly loaded or background preview.
+const IMAGE_PREVIEW_RETAINED_BYTES_CAP: usize = IMAGE_PREVIEW_MAX_RGBA_BYTES as usize * 2;
+const IMAGE_PREVIEW_MAX_SIDE: u32 = 16_384;
 const IMAGE_PREVIEW_MARGIN: f32 = 24.0;
 const IMAGE_PREVIEW_METADATA_PADDING: f32 = 10.0;
 
@@ -14,7 +22,7 @@ const IMAGE_PREVIEW_METADATA_PADDING: f32 = 10.0;
 pub(crate) struct LoadedImagePreview {
     pub(crate) width: usize,
     pub(crate) height: usize,
-    pub(crate) rgba: Vec<u8>,
+    pub(crate) rgba: Option<Vec<u8>>,
     pub(crate) byte_len: usize,
 }
 
@@ -36,19 +44,89 @@ impl ImagePreviewState {
         ctx: &egui::Context,
         buffer_id: kuroya_core::BufferId,
     ) -> egui::TextureId {
-        let loaded = &self.loaded;
+        if self.texture.is_none() {
+            let loaded = &mut self.loaded;
+            let rgba = loaded.rgba.take().unwrap_or_else(|| {
+                vec![0; loaded.width.saturating_mul(loaded.height).saturating_mul(4)]
+            });
+            let image = ColorImage::from_rgba_unmultiplied([loaded.width, loaded.height], &rgba);
+            self.texture = Some(ctx.load_texture(
+                format!("kuroya-image-preview-{buffer_id}"),
+                image,
+                TextureOptions::LINEAR,
+            ));
+        }
         self.texture
-            .get_or_insert_with(|| {
-                let image =
-                    ColorImage::from_rgba_unmultiplied([loaded.width, loaded.height], &loaded.rgba);
-                ctx.load_texture(
-                    format!("kuroya-image-preview-{buffer_id}"),
-                    image,
-                    TextureOptions::LINEAR,
-                )
-            })
+            .as_ref()
+            .expect("image preview texture should exist after upload")
             .id()
     }
+
+    fn retained_pixel_bytes(&self) -> usize {
+        if let Some(rgba) = &self.loaded.rgba {
+            rgba.len()
+        } else if self.texture.is_some() {
+            self.loaded
+                .width
+                .saturating_mul(self.loaded.height)
+                .saturating_mul(4)
+        } else {
+            0
+        }
+    }
+}
+
+pub(crate) fn enforce_image_preview_retained_byte_cap<I>(
+    previews: &mut HashMap<BufferId, ImagePreviewState>,
+    keep_ids: I,
+) -> Vec<BufferId>
+where
+    I: IntoIterator<Item = BufferId>,
+{
+    evict_image_previews_over_cap(previews, keep_ids, IMAGE_PREVIEW_RETAINED_BYTES_CAP)
+}
+
+fn evict_image_previews_over_cap<I>(
+    previews: &mut HashMap<BufferId, ImagePreviewState>,
+    keep_ids: I,
+    cap: usize,
+) -> Vec<BufferId>
+where
+    I: IntoIterator<Item = BufferId>,
+{
+    let keep_ids = keep_ids.into_iter().collect::<HashSet<_>>();
+    let mut retained_bytes = previews
+        .values()
+        .map(ImagePreviewState::retained_pixel_bytes)
+        .sum::<usize>();
+    if retained_bytes <= cap {
+        return Vec::new();
+    }
+
+    let mut candidates = previews
+        .iter()
+        .filter_map(|(id, preview)| {
+            let retained_bytes = preview.retained_pixel_bytes();
+            (retained_bytes > 0 && !keep_ids.contains(id)).then_some((*id, retained_bytes))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by(|(left_id, left_bytes), (right_id, right_bytes)| {
+        right_bytes
+            .cmp(left_bytes)
+            .then_with(|| left_id.cmp(right_id))
+    });
+
+    let mut evicted = Vec::new();
+    for (id, bytes) in candidates {
+        if retained_bytes <= cap {
+            break;
+        }
+        if previews.remove(&id).is_some() {
+            retained_bytes = retained_bytes.saturating_sub(bytes);
+            evicted.push(id);
+        }
+    }
+    evicted
 }
 
 pub(crate) fn path_is_image_preview(path: &Path) -> bool {
@@ -115,7 +193,7 @@ pub(crate) fn render_image_preview(
         Align2::CENTER_TOP,
         metadata,
         FontId::monospace((font_size * 0.84).clamp(10.0, 13.0)),
-        Color32::from_rgb(175, 179, 186),
+        ui.visuals().weak_text_color(),
     );
 }
 
@@ -132,7 +210,7 @@ fn decode_image_preview(bytes: Vec<u8>) -> Result<LoadedImagePreview, String> {
     let mut limits = Limits::default();
     limits.max_image_width = Some(IMAGE_PREVIEW_MAX_SIDE);
     limits.max_image_height = Some(IMAGE_PREVIEW_MAX_SIDE);
-    limits.max_alloc = Some(IMAGE_PREVIEW_MAX_PIXELS.saturating_mul(4));
+    limits.max_alloc = Some(IMAGE_PREVIEW_MAX_RGBA_BYTES);
     reader.limits(limits);
     let image = reader
         .with_guessed_format()
@@ -145,7 +223,7 @@ fn decode_image_preview(bytes: Vec<u8>) -> Result<LoadedImagePreview, String> {
     Ok(LoadedImagePreview {
         width: width as usize,
         height: height as usize,
-        rgba: rgba.into_raw(),
+        rgba: Some(rgba.into_raw()),
         byte_len,
     })
 }
@@ -157,8 +235,10 @@ fn validate_image_dimensions(width: u32, height: u32) -> Result<(), String> {
     let pixels = u64::from(width).saturating_mul(u64::from(height));
     if pixels > IMAGE_PREVIEW_MAX_PIXELS {
         Err(format!(
-            "image is too large to preview ({} x {} px)",
-            width, height
+            "image is too large to preview ({} x {} px, limit is about {})",
+            width,
+            height,
+            format_byte_size(IMAGE_PREVIEW_MAX_RGBA_BYTES)
         ))
     } else {
         Ok(())
@@ -186,11 +266,11 @@ fn fitted_image_preview_rect(bounds: Rect, image_size: [usize; 2]) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_image_preview, fitted_image_preview_rect, path_is_image_preview,
-        validate_image_dimensions,
+        ImagePreviewState, LoadedImagePreview, decode_image_preview, evict_image_previews_over_cap,
+        fitted_image_preview_rect, path_is_image_preview, validate_image_dimensions,
     };
     use eframe::egui::{Rect, pos2};
-    use std::{io::Cursor, path::Path};
+    use std::{collections::HashMap, io::Cursor, path::Path};
 
     #[test]
     fn image_preview_detects_supported_extensions_case_insensitively() {
@@ -204,6 +284,8 @@ mod tests {
     #[test]
     fn image_preview_dimension_guard_rejects_empty_or_huge_images() {
         assert!(validate_image_dimensions(1, 1).is_ok());
+        assert!(validate_image_dimensions(4096, 4096).is_ok());
+        assert!(validate_image_dimensions(4097, 4096).is_err());
         assert!(validate_image_dimensions(0, 10).is_err());
         assert!(validate_image_dimensions(100_000, 100_000).is_err());
     }
@@ -221,8 +303,51 @@ mod tests {
 
         assert_eq!(preview.width, 1);
         assert_eq!(preview.height, 1);
-        assert_eq!(preview.rgba, vec![12, 34, 56, 255]);
+        assert_eq!(preview.rgba.as_deref(), Some(&[12, 34, 56, 255][..]));
         assert!(preview.byte_len > 0);
+    }
+
+    #[test]
+    fn image_preview_upload_drops_cpu_rgba_pixels() {
+        let ctx = egui::Context::default();
+        let mut preview = preview_state_for_test(1, 1);
+
+        let _ = preview.texture_id(&ctx, 7);
+
+        assert!(preview.loaded.rgba.is_none());
+        assert_eq!(preview.retained_pixel_bytes(), 4);
+    }
+
+    #[test]
+    fn image_preview_retained_byte_cap_evicts_largest_unkept_previews() {
+        let mut previews = HashMap::from([
+            (1, preview_state_for_test(10, 1)),
+            (2, preview_state_for_test(8, 1)),
+            (3, preview_state_for_test(4, 1)),
+        ]);
+
+        let evicted = evict_image_previews_over_cap(&mut previews, [3], 48);
+
+        assert_eq!(evicted, vec![1]);
+        assert!(!previews.contains_key(&1));
+        assert!(previews.contains_key(&2));
+        assert!(previews.contains_key(&3));
+    }
+
+    #[test]
+    fn image_preview_retained_byte_cap_preserves_kept_previews() {
+        let mut previews = HashMap::from([
+            (1, preview_state_for_test(10, 1)),
+            (2, preview_state_for_test(8, 1)),
+            (3, preview_state_for_test(4, 1)),
+        ]);
+
+        let evicted = evict_image_previews_over_cap(&mut previews, [1, 3], 60);
+
+        assert_eq!(evicted, vec![2]);
+        assert!(previews.contains_key(&1));
+        assert!(!previews.contains_key(&2));
+        assert!(previews.contains_key(&3));
     }
 
     #[test]
@@ -238,5 +363,14 @@ mod tests {
         assert_eq!(small.width(), 50.0);
         assert_eq!(small.height(), 20.0);
         assert_eq!(small.center(), bounds.center());
+    }
+
+    fn preview_state_for_test(width: usize, height: usize) -> ImagePreviewState {
+        ImagePreviewState::from_loaded(LoadedImagePreview {
+            width,
+            height,
+            rgba: Some(vec![255; width * height * 4]),
+            byte_len: width * height * 4,
+        })
     }
 }

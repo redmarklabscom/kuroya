@@ -24,6 +24,101 @@ fn bounded_lsp_value_rejects_payloads_above_byte_limit() {
 }
 
 #[test]
+fn default_lsp_servers_cover_common_language_ids() {
+    let servers = default_server_configs();
+    let languages = servers
+        .iter()
+        .map(|server| server.language.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for language in [
+        "rust",
+        "python",
+        "typescript",
+        "javascript",
+        "go",
+        "java",
+        "c",
+        "cpp",
+        "csharp",
+        "php",
+        "ruby",
+        "lua",
+        "dart",
+        "kotlin",
+        "swift",
+        "toml",
+        "json",
+        "html",
+        "css",
+        "yaml",
+        "xml",
+        "markdown",
+        "vue",
+        "svelte",
+        "dockerfile",
+        "terraform",
+        "powershell",
+        "shellscript",
+        "sql",
+    ] {
+        assert!(languages.contains(language), "missing {language} default");
+    }
+    assert_eq!(languages.len(), servers.len());
+}
+
+#[test]
+fn server_for_language_uses_popular_language_defaults() {
+    assert_eq!(
+        server_for_language(LanguageId::Php)
+            .expect("php default")
+            .command,
+        "intelephense"
+    );
+    assert_eq!(
+        server_for_language(LanguageId::Ruby)
+            .expect("ruby default")
+            .command,
+        "ruby-lsp"
+    );
+    assert_eq!(
+        server_for_language(LanguageId::Dart)
+            .expect("dart default")
+            .args,
+        vec!["language-server".to_owned(), "--protocol=lsp".to_owned()]
+    );
+    assert!(server_for_language(LanguageId::PlainText).is_none());
+}
+
+#[test]
+fn lsp_language_id_for_path_preserves_common_variant_extensions() {
+    assert_eq!(
+        lsp_language_id_for_path(LanguageId::TypeScript, Some(Path::new("src/App.tsx"))),
+        "typescriptreact"
+    );
+    assert_eq!(
+        lsp_language_id_for_path(LanguageId::JavaScript, Some(Path::new("src/App.jsx"))),
+        "javascriptreact"
+    );
+    assert_eq!(
+        lsp_language_id_for_path(LanguageId::Css, Some(Path::new("src/app.scss"))),
+        "scss"
+    );
+    assert_eq!(
+        lsp_language_id_for_path(LanguageId::Css, Some(Path::new("src/app.less"))),
+        "less"
+    );
+    assert_eq!(
+        lsp_language_id_for_path(LanguageId::Json, Some(Path::new("tsconfig.jsonc"))),
+        "jsonc"
+    );
+    assert_eq!(
+        lsp_language_id_for_path(LanguageId::TypeScript, Some(Path::new("src/app.mts"))),
+        "typescript"
+    );
+}
+
+#[test]
 fn parses_publish_diagnostics_notification() {
     let uri = path_to_file_uri(Path::new("src/main.rs"));
     let value = json!({

@@ -1,13 +1,14 @@
 use crate::{ProjectIndex, text_match::AsciiCaseInsensitiveMatcher};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::time::UNIX_EPOCH;
 use std::{
     collections::HashSet,
     fmt::{self, Write as _},
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
 };
 
 const MAX_SEARCH_PREVIEW_CHARS: usize = 240;
@@ -17,8 +18,9 @@ const SEARCH_CANCEL_LINE_INTERVAL: usize = 64;
 const SEARCH_CANCEL_MATCH_INTERVAL: usize = 64;
 const SEARCH_CANCEL_BYTE_INTERVAL: usize = 16 * 1024;
 const MAX_SEARCH_QUERY_BYTES: usize = SEARCH_CANCEL_BYTE_INTERVAL;
+#[cfg(test)]
 const PROJECT_SEARCH_INDEX_MAX_TEXT_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_SEARCH_FILE_BYTES: u64 = PROJECT_SEARCH_INDEX_MAX_TEXT_BYTES;
+const MAX_SEARCH_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SEARCH_GLOB_PATTERNS: usize = 1024;
 const MAX_SEARCH_GLOB_PATTERN_BYTES: usize = 4096;
 const GLOB_ERROR_PATTERN_MAX_CHARS: usize = 120;
@@ -64,7 +66,8 @@ pub struct SearchStats {
     pub skipped_large_files: usize,
     pub skipped_binary_files: usize,
     pub skipped_unreadable_files: usize,
-    pub skipped_index_budget_files: usize,
+    #[cfg(test)]
+    pub(crate) skipped_index_budget_files: usize,
 }
 
 impl SearchStats {
@@ -72,10 +75,10 @@ impl SearchStats {
         self.skipped_large_files
             .saturating_add(self.skipped_binary_files)
             .saturating_add(self.skipped_unreadable_files)
-            .saturating_add(self.skipped_index_budget_files)
+            .saturating_add(self.skipped_index_budget_files_for_tests())
     }
 
-    fn merge(&mut self, other: Self) {
+    pub fn merge(&mut self, other: Self) {
         self.searched_files = self.searched_files.saturating_add(other.searched_files);
         self.matched_files = self.matched_files.saturating_add(other.matched_files);
         self.skipped_large_files = self
@@ -87,10 +90,28 @@ impl SearchStats {
         self.skipped_unreadable_files = self
             .skipped_unreadable_files
             .saturating_add(other.skipped_unreadable_files);
+        self.merge_skipped_index_budget_files_for_tests(other);
+    }
+
+    #[cfg(test)]
+    fn skipped_index_budget_files_for_tests(self) -> usize {
+        self.skipped_index_budget_files
+    }
+
+    #[cfg(not(test))]
+    fn skipped_index_budget_files_for_tests(self) -> usize {
+        0
+    }
+
+    #[cfg(test)]
+    fn merge_skipped_index_budget_files_for_tests(&mut self, other: Self) {
         self.skipped_index_budget_files = self
             .skipped_index_budget_files
             .saturating_add(other.skipped_index_budget_files);
     }
+
+    #[cfg(not(test))]
+    fn merge_skipped_index_budget_files_for_tests(&mut self, _other: Self) {}
 }
 
 #[derive(Debug, Clone, Default)]
@@ -102,12 +123,21 @@ pub struct SearchResult {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ProjectSearchIndex {
+pub struct SearchProgress {
+    pub matches: Vec<SearchMatch>,
+    pub truncated: bool,
+    pub stats: SearchStats,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+struct ProjectSearchIndex {
     root: PathBuf,
     max_file_bytes: u64,
     files: Vec<ProjectSearchIndexedFile>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct ProjectSearchIndexedFile {
     path: PathBuf,
@@ -115,6 +145,7 @@ struct ProjectSearchIndexedFile {
     content: ProjectSearchIndexedFileContent,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProjectSearchIndexedFileSignature {
     len: u64,
@@ -124,20 +155,25 @@ struct ProjectSearchIndexedFileSignature {
 
 #[derive(Debug, Clone)]
 enum ProjectSearchIndexedFileContent {
-    Text { text: String, byte_len: u64 },
+    Text {
+        text: String,
+        byte_len: u64,
+    },
     TooLarge,
     BinaryOrInvalid,
     Unreadable,
+    #[cfg(test)]
     IndexBudgetExceeded,
 }
 
+#[cfg(test)]
 impl ProjectSearchIndex {
-    pub fn build(index: &ProjectIndex, max_file_bytes: u64) -> Self {
+    fn build(index: &ProjectIndex, max_file_bytes: u64) -> Self {
         Self::build_with_cancel(index, max_file_bytes, || false)
             .expect("non-cancellable search index build should complete")
     }
 
-    pub fn build_with_cancel(
+    fn build_with_cancel(
         index: &ProjectIndex,
         max_file_bytes: u64,
         is_cancelled: impl Fn() -> bool,
@@ -150,7 +186,7 @@ impl ProjectSearchIndex {
         )
     }
 
-    pub fn build_with_text_budget(
+    fn build_with_text_budget(
         index: &ProjectIndex,
         max_file_bytes: u64,
         max_text_bytes: u64,
@@ -159,7 +195,7 @@ impl ProjectSearchIndex {
             .expect("non-cancellable search index build should complete")
     }
 
-    pub fn build_with_text_budget_and_cancel(
+    fn build_with_text_budget_and_cancel(
         index: &ProjectIndex,
         max_file_bytes: u64,
         max_text_bytes: u64,
@@ -196,19 +232,15 @@ impl ProjectSearchIndex {
         })
     }
 
-    pub fn root(&self) -> &Path {
+    fn root(&self) -> &Path {
         &self.root
     }
 
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.files.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.files.is_empty()
-    }
-
-    pub fn max_file_bytes(&self) -> u64 {
+    fn max_file_bytes(&self) -> u64 {
         self.max_file_bytes
     }
 }
@@ -222,21 +254,30 @@ pub fn search_project_with_cancel(
     options: &SearchOptions,
     is_cancelled: impl Fn() -> bool,
 ) -> Option<SearchResult> {
+    search_project_with_cancel_and_progress(index, options, is_cancelled, |_| {})
+}
+
+pub fn search_project_with_cancel_and_progress(
+    index: &ProjectIndex,
+    options: &SearchOptions,
+    is_cancelled: impl Fn() -> bool,
+    mut on_progress: impl FnMut(SearchProgress),
+) -> Option<SearchResult> {
     let prepared = match PreparedProjectSearch::new_with_cancel(options, &is_cancelled)? {
         Ok(Some(prepared)) => prepared,
         Ok(None) => return Some(SearchResult::default()),
         Err(error) => return Some(search_error_result(error)),
     };
-    let search_index =
-        ProjectSearchIndex::build_with_cancel(index, options.max_file_bytes, &is_cancelled)?;
-    search_project_index_prepared(&search_index, options, &prepared, &is_cancelled)
+    search_project_prepared(index, options, &prepared, &is_cancelled, &mut on_progress)
 }
 
-pub fn search_project_index(index: &ProjectSearchIndex, options: &SearchOptions) -> SearchResult {
+#[cfg(test)]
+fn search_project_index(index: &ProjectSearchIndex, options: &SearchOptions) -> SearchResult {
     search_project_index_with_cancel(index, options, || false).unwrap_or_default()
 }
 
-pub fn search_project_index_with_cancel(
+#[cfg(test)]
+fn search_project_index_with_cancel(
     index: &ProjectSearchIndex,
     options: &SearchOptions,
     is_cancelled: impl Fn() -> bool,
@@ -326,6 +367,85 @@ impl<'a> PreparedProjectSearch<'a> {
     }
 }
 
+fn search_project_prepared(
+    index: &ProjectIndex,
+    options: &SearchOptions,
+    prepared: &PreparedProjectSearch<'_>,
+    is_cancelled: &dyn Fn() -> bool,
+    on_progress: &mut dyn FnMut(SearchProgress),
+) -> Option<SearchResult> {
+    let context = ProjectSearchContext {
+        root: index.root(),
+        #[cfg(test)]
+        indexed_max_file_bytes: effective_search_file_byte_limit(options.max_file_bytes),
+        line_needle: &prepared.line_needle,
+        options,
+        include_globs: prepared.include_globs.as_ref(),
+        exclude_globs: prepared.exclude_globs.as_ref(),
+        is_cancelled,
+    };
+
+    let mut result_budget = SearchResultBudget::new(options.max_results);
+    let mut stats = SearchStats::default();
+    let mut truncated = false;
+    let mut matches = Vec::with_capacity(result_budget.limit().min(1024));
+    let mut emitted_matches = 0usize;
+    for files in index.files().chunks(SEARCH_FILE_CHUNK_SIZE) {
+        if (context.is_cancelled)() {
+            return None;
+        }
+        if result_budget.is_exhausted() {
+            truncated = true;
+            break;
+        }
+        let result = search_project_path_chunk(&context, files, &mut result_budget, &mut matches)?;
+        stats.merge(result.stats);
+        truncated |= result.truncated;
+        emit_project_search_progress(
+            &matches,
+            &mut emitted_matches,
+            result.stats,
+            truncated,
+            on_progress,
+        );
+    }
+    truncated |= matches.len() > options.max_results;
+    matches.truncate(options.max_results);
+
+    Some(SearchResult {
+        matches,
+        truncated,
+        error: None,
+        stats,
+    })
+}
+
+fn emit_project_search_progress(
+    matches: &[SearchMatch],
+    emitted_matches: &mut usize,
+    stats: SearchStats,
+    truncated: bool,
+    on_progress: &mut dyn FnMut(SearchProgress),
+) {
+    let new_matches = if *emitted_matches < matches.len() {
+        matches[*emitted_matches..].to_vec()
+    } else {
+        Vec::new()
+    };
+    *emitted_matches = matches.len();
+
+    if new_matches.is_empty() && stats == SearchStats::default() && !truncated {
+        return;
+    }
+
+    on_progress(SearchProgress {
+        matches: new_matches,
+        truncated,
+        stats,
+    });
+}
+
+#[cfg(test)]
 fn search_project_index_prepared(
     index: &ProjectSearchIndex,
     options: &SearchOptions,
@@ -334,6 +454,7 @@ fn search_project_index_prepared(
 ) -> Option<SearchResult> {
     let context = ProjectSearchContext {
         root: index.root(),
+        #[cfg(test)]
         indexed_max_file_bytes: index.max_file_bytes(),
         line_needle: &prepared.line_needle,
         options,
@@ -369,6 +490,7 @@ fn search_project_index_prepared(
     })
 }
 
+#[cfg(test)]
 fn reserve_search_text_budget(
     indexed_text_bytes: &mut u64,
     bytes: u64,
@@ -388,6 +510,7 @@ fn reserve_search_text_budget(
     true
 }
 
+#[cfg(test)]
 fn read_indexed_search_file_content(
     path: &Path,
     max_file_bytes: u64,
@@ -450,6 +573,7 @@ fn read_indexed_search_file_content(
     (signature, content)
 }
 
+#[cfg(test)]
 fn indexed_search_open_error_content(
     path: &Path,
     max_file_bytes: u64,
@@ -470,10 +594,12 @@ fn indexed_search_open_error_content(
     }
 }
 
+#[cfg(test)]
 fn search_text_budget_exhausted(indexed_text_bytes: u64, max_text_bytes: u64) -> bool {
     max_text_bytes > 0 && indexed_text_bytes >= max_text_bytes
 }
 
+#[cfg(test)]
 fn remaining_search_text_budget(indexed_text_bytes: u64, max_text_bytes: u64) -> Option<u64> {
     if max_text_bytes == 0 {
         return None;
@@ -485,6 +611,7 @@ fn effective_search_file_byte_limit(max_file_bytes: u64) -> u64 {
     max_file_bytes.min(MAX_SEARCH_FILE_BYTES)
 }
 
+#[cfg(test)]
 impl ProjectSearchIndexedFileSignature {
     fn from_metadata(metadata: &fs::Metadata) -> Self {
         Self {
@@ -495,12 +622,14 @@ impl ProjectSearchIndexedFileSignature {
     }
 }
 
+#[cfg(test)]
 fn current_indexed_file_signature(path: &Path) -> Option<ProjectSearchIndexedFileSignature> {
     fs::metadata(path)
         .ok()
         .map(|metadata| ProjectSearchIndexedFileSignature::from_metadata(&metadata))
 }
 
+#[cfg(test)]
 fn metadata_modified_nanos(metadata: &fs::Metadata) -> u128 {
     metadata
         .modified()
@@ -510,6 +639,7 @@ fn metadata_modified_nanos(metadata: &fs::Metadata) -> u128 {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 fn metadata_created_nanos(metadata: &fs::Metadata) -> u128 {
     metadata
         .created()
@@ -571,6 +701,7 @@ impl SearchResultBudget {
 
 struct ProjectSearchContext<'a, 'needle> {
     root: &'a Path,
+    #[cfg(test)]
     indexed_max_file_bytes: u64,
     line_needle: &'a LineSearchNeedle<'needle>,
     options: &'a SearchOptions,
@@ -579,6 +710,7 @@ struct ProjectSearchContext<'a, 'needle> {
     is_cancelled: &'a dyn Fn() -> bool,
 }
 
+#[cfg(test)]
 fn search_project_index_chunk(
     context: &ProjectSearchContext<'_, '_>,
     files: &[ProjectSearchIndexedFile],
@@ -597,6 +729,40 @@ fn search_project_index_chunk(
             break;
         }
         let result = match search_project_index_file(context, file, result_budget, matches) {
+            FileSearchOutcome::Searched(result) => result,
+            FileSearchOutcome::Skipped => continue,
+            FileSearchOutcome::Cancelled => return None,
+        };
+        stats.merge(result.stats);
+        truncated |= result.local_truncated;
+
+        if result_budget.is_exhausted() {
+            truncated = true;
+            break;
+        }
+    }
+
+    Some(SearchChunkResult { truncated, stats })
+}
+
+fn search_project_path_chunk(
+    context: &ProjectSearchContext<'_, '_>,
+    files: &[PathBuf],
+    result_budget: &mut SearchResultBudget,
+    matches: &mut Vec<SearchMatch>,
+) -> Option<SearchChunkResult> {
+    let mut truncated = false;
+    let mut stats = SearchStats::default();
+
+    for path in files {
+        if (context.is_cancelled)() {
+            return None;
+        }
+        if result_budget.is_exhausted() {
+            truncated = true;
+            break;
+        }
+        let result = match search_project_path_file(context, path, result_budget, matches) {
             FileSearchOutcome::Searched(result) => result,
             FileSearchOutcome::Skipped => continue,
             FileSearchOutcome::Cancelled => return None,
@@ -669,6 +835,7 @@ impl FileSearchResult {
         })
     }
 
+    #[cfg(test)]
     fn skipped_index_budget() -> Self {
         Self::skipped(SearchStats {
             skipped_index_budget_files: 1,
@@ -684,6 +851,39 @@ impl FileSearchResult {
     }
 }
 
+fn search_project_path_file(
+    context: &ProjectSearchContext<'_, '_>,
+    path: &Path,
+    result_budget: &mut SearchResultBudget,
+    matches: &mut Vec<SearchMatch>,
+) -> FileSearchOutcome {
+    if !path_allowed_by_globs(
+        context.root,
+        path,
+        context.include_globs,
+        context.exclude_globs,
+    ) {
+        return FileSearchOutcome::Skipped;
+    }
+    if (context.is_cancelled)() {
+        return FileSearchOutcome::Cancelled;
+    }
+    let content = read_live_search_file_content(path, context.options.max_file_bytes);
+    if (context.is_cancelled)() {
+        return FileSearchOutcome::Cancelled;
+    }
+    FileSearchOutcome::from_result(search_project_file_content(
+        path,
+        &content,
+        context.line_needle,
+        context.options,
+        result_budget,
+        matches,
+        context.is_cancelled,
+    ))
+}
+
+#[cfg(test)]
 fn search_project_index_file(
     context: &ProjectSearchContext<'_, '_>,
     file: &ProjectSearchIndexedFile,
@@ -747,6 +947,7 @@ fn search_project_index_file(
     ))
 }
 
+#[cfg(test)]
 fn indexed_search_file_needs_larger_limit_read(
     file: &ProjectSearchIndexedFile,
     indexed_max_file_bytes: u64,
@@ -756,6 +957,7 @@ fn indexed_search_file_needs_larger_limit_read(
         && matches!(file.content, ProjectSearchIndexedFileContent::TooLarge)
 }
 
+#[cfg(test)]
 fn indexed_search_file_is_stale(file: &ProjectSearchIndexedFile) -> bool {
     current_indexed_file_signature(&file.path) != file.signature
 }
@@ -804,6 +1006,7 @@ fn search_project_file_content(
             Some(FileSearchResult::skipped_binary())
         }
         ProjectSearchIndexedFileContent::Unreadable => Some(FileSearchResult::skipped_unreadable()),
+        #[cfg(test)]
         ProjectSearchIndexedFileContent::IndexBudgetExceeded => {
             Some(FileSearchResult::skipped_index_budget())
         }

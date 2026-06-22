@@ -1,7 +1,5 @@
-use egui::{Color32, RichText, Ui};
+use egui::{RichText, Ui};
 use std::borrow::Cow;
-
-const WARNING_COLOR: Color32 = Color32::from_rgb(242, 178, 90);
 
 pub(crate) fn render_status_warnings(
     ui: &mut Ui,
@@ -156,8 +154,12 @@ fn push_usize_decimal(output: &mut String, mut value: usize) {
 }
 
 fn warning_label(ui: &mut Ui, text: impl AsRef<str>, tooltip: impl AsRef<str>) {
-    ui.label(RichText::new(text.as_ref()).small().color(WARNING_COLOR))
-        .on_hover_text(tooltip.as_ref());
+    ui.label(
+        RichText::new(text.as_ref())
+            .small()
+            .color(ui.visuals().warn_fg_color),
+    )
+    .on_hover_text(tooltip.as_ref());
     ui.separator();
 }
 

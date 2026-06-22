@@ -9,7 +9,7 @@ use crate::{
 };
 use kuroya_core::{
     GitAutoRepositoryDetection, GitOpenRepositoryInParentFolders, GitSnapshot, ProjectIndex,
-    ProjectSearchIndex, SearchOptions, discover_workspace_plugins,
+    discover_workspace_plugins,
 };
 use std::{
     path::{Path, PathBuf},
@@ -93,11 +93,9 @@ impl KuroyaApp {
                         UiEvent::Indexed {
                             request_id,
                             root: root.clone(),
-                            index: index.clone(),
-                            search_index: ProjectSearchIndex::default(),
+                            index,
                         },
                     );
-                    send_project_search_indexed(&tx, request_id, root, &index);
                     return;
                 }
             }
@@ -109,12 +107,22 @@ impl KuroyaApp {
                 UiEvent::Indexed {
                     request_id,
                     root: root.clone(),
-                    index: index.clone(),
-                    search_index: ProjectSearchIndex::default(),
+                    index,
                 },
             );
-            send_project_search_indexed(&tx, request_id, root, &index);
         });
+    }
+
+    pub(crate) fn ensure_workspace_index_started(&mut self) -> bool {
+        if self.workspace_placeholder
+            || self.project_index_generation > 0
+            || self.workspace_index_in_flight_request_id.is_some()
+        {
+            return false;
+        }
+
+        self.spawn_index();
+        true
     }
 
     pub(crate) fn spawn_git_scan(&mut self) -> bool {
@@ -430,23 +438,6 @@ impl KuroyaApp {
         self.theme_picker_selected =
             selected_theme_index_with_plugins(&self.settings.theme, &self.plugin_themes);
     }
-}
-
-fn send_project_search_indexed(
-    tx: &crate::ui_event_channel::Sender<UiEvent>,
-    request_id: u64,
-    root: PathBuf,
-    index: &ProjectIndex,
-) {
-    let search_index = ProjectSearchIndex::build(index, SearchOptions::default().max_file_bytes);
-    let _ = crate::ui_event_channel::send_critical_ui_event(
-        tx,
-        UiEvent::ProjectSearchIndexed {
-            request_id,
-            root,
-            search_index,
-        },
-    );
 }
 
 fn reserve_startup_task_request_id_state(

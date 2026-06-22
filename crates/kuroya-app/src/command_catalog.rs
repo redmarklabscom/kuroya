@@ -25,6 +25,7 @@ static COMMAND_CATALOG: &[Command] = &[
     Command::ToggleReadOnly,
     Command::ToggleMinimap,
     Command::ToggleStickyScroll,
+    Command::ToggleVimMode,
     Command::ReloadSettings,
     Command::CheckForUpdates,
     Command::ToggleSettingsPanel,

@@ -115,6 +115,20 @@ impl PluginActivationState {
         })
     }
 
+    pub fn activate_plugin_command(
+        &mut self,
+        registry: &PluginRuntimeRegistry,
+        plugin_id: &str,
+        command_id: &str,
+    ) -> Vec<PluginActivationRecord> {
+        self.activate_plugins(
+            registry
+                .plugin_command_activation_plugins(plugin_id, command_id)
+                .into_iter(),
+            || PluginActivationTrigger::Command(command_id.to_owned()),
+        )
+    }
+
     pub fn activate_language(
         &mut self,
         registry: &PluginRuntimeRegistry,
@@ -275,6 +289,33 @@ impl PluginRuntimeRegistry {
         self.activation_plugin_iter(&self.startup)
     }
 
+    fn plugin_command_activation_plugins<'a>(
+        &'a self,
+        plugin_id: &str,
+        command_id: &str,
+    ) -> Vec<&'a PluginRuntimeRegistration> {
+        let mut emitted = BTreeSet::new();
+        let mut plugins = Vec::new();
+
+        if let Some(index) = self.by_id.get(plugin_id)
+            && let Some(plugin) = self.plugins.get(*index)
+            && plugin.activates_on_command(command_id)
+            && emitted.insert(*index)
+        {
+            plugins.push(plugin);
+        }
+
+        for index in &self.any {
+            if emitted.insert(*index)
+                && let Some(plugin) = self.plugins.get(*index)
+            {
+                plugins.push(plugin);
+            }
+        }
+
+        plugins
+    }
+
     fn activation_plugin_iter<'a>(
         &'a self,
         indexes: &'a [usize],
@@ -402,7 +443,7 @@ impl PluginCommandRegistry {
             if !seen_plugin_ids.insert(plugin.manifest.id.as_str()) {
                 continue;
             }
-            if !plugin.manifest.capabilities.commands {
+            if !plugin_command_contributions_are_runnable(plugin) {
                 continue;
             }
 
@@ -447,6 +488,19 @@ impl PluginCommandRegistry {
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
     }
+}
+
+fn plugin_command_contributions_are_runnable(plugin: &PluginDescriptor) -> bool {
+    plugin.manifest.capabilities.commands
+        && plugin.manifest.entry.is_some()
+        && plugin_command_runtime_capabilities_are_supported(&plugin.manifest.capabilities)
+}
+
+fn plugin_command_runtime_capabilities_are_supported(capabilities: &PluginCapabilities) -> bool {
+    !capabilities.workspace_read
+        && !capabilities.workspace_write
+        && !capabilities.process_spawn
+        && !capabilities.network
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -610,11 +664,153 @@ impl PluginThemeRegistry {
 pub fn load_plugin_theme_settings(
     registration: &PluginThemeRegistration,
 ) -> anyhow::Result<ThemeSettings> {
-    let text = read_plugin_text_file_with_limit(&registration.path, MAX_PLUGIN_THEME_BYTES)?;
-    let mut theme: ThemeSettings = toml::from_str(&text)
-        .with_context(|| format!("could not parse {}", registration.path.display()))?;
+    let mut theme = load_theme_settings_from_path(&registration.path)?;
     theme.name = registration.label.clone();
     Ok(theme)
+}
+
+pub fn load_theme_settings_from_path(path: &Path) -> anyhow::Result<ThemeSettings> {
+    let text = read_plugin_text_file_with_limit(path, MAX_PLUGIN_THEME_BYTES)?;
+    parse_theme_settings_toml(path, &text)
+}
+
+fn parse_theme_settings_toml(path: &Path, text: &str) -> anyhow::Result<ThemeSettings> {
+    let value: toml::Value =
+        toml::from_str(text).with_context(|| format!("could not parse {}", path.display()))?;
+    if root_theme_color_table_name(&value).is_some() {
+        parse_friendly_theme_settings_toml(&value)
+            .map_err(|error| anyhow::anyhow!("could not parse {}: {error}", path.display()))
+    } else {
+        toml::from_str(text).with_context(|| format!("could not parse {}", path.display()))
+    }
+}
+
+fn root_theme_color_table_name(value: &toml::Value) -> Option<&'static str> {
+    let table = value.as_table()?;
+    if table.contains_key("palette") {
+        Some("palette")
+    } else if table.contains_key("colors") {
+        Some("colors")
+    } else {
+        None
+    }
+}
+
+fn parse_friendly_theme_settings_toml(value: &toml::Value) -> anyhow::Result<ThemeSettings> {
+    let root = value
+        .as_table()
+        .ok_or_else(|| anyhow::anyhow!("theme file must be a TOML table"))?;
+    if root.contains_key("palette") && root.contains_key("colors") {
+        bail!("theme file must use either [palette] or [colors], not both");
+    }
+
+    let color_table_name =
+        root_theme_color_table_name(value).expect("friendly theme table should exist");
+    let color_table = root
+        .get(color_table_name)
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| anyhow::anyhow!("[{color_table_name}] must be a table"))?;
+
+    let mut theme = ThemeSettings::default();
+    if let Some(name) = root.get("name") {
+        theme.name = name
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("theme name must be a string"))?
+            .to_owned();
+    }
+
+    for role in THEME_COLOR_ROLES {
+        if let Some(value) = color_table.get(role) {
+            let color = parse_theme_color_value(role, value)?;
+            set_theme_color(&mut theme, role, color);
+        }
+    }
+
+    Ok(theme)
+}
+
+const THEME_COLOR_ROLES: [&str; 9] = [
+    "background",
+    "panel",
+    "panel_alt",
+    "text",
+    "muted_text",
+    "accent",
+    "selection",
+    "warning",
+    "error",
+];
+
+fn set_theme_color(theme: &mut ThemeSettings, role: &str, color: [u8; 3]) {
+    match role {
+        "background" => theme.background = color,
+        "panel" => theme.panel = color,
+        "panel_alt" => theme.panel_alt = color,
+        "text" => theme.text = color,
+        "muted_text" => theme.muted_text = color,
+        "accent" => theme.accent = color,
+        "selection" => theme.selection = Some(color),
+        "warning" => theme.warning = color,
+        "error" => theme.error = color,
+        _ => {}
+    }
+}
+
+fn parse_theme_color_value(role: &str, value: &toml::Value) -> anyhow::Result<[u8; 3]> {
+    match value {
+        toml::Value::String(value) => parse_theme_hex_color(role, value),
+        toml::Value::Array(value) => parse_theme_rgb_array(role, value),
+        _ => bail!("theme color {role} must be a hex string or RGB array"),
+    }
+}
+
+fn parse_theme_hex_color(role: &str, value: &str) -> anyhow::Result<[u8; 3]> {
+    let Some(hex) = value.trim().strip_prefix('#') else {
+        bail!("theme color {role} must be #RRGGBB or #RGB hex");
+    };
+    let digits: Vec<char> = hex.chars().collect();
+    match digits.as_slice() {
+        [r, g, b] => Ok([
+            parse_theme_hex_digit(role, *r)? * 17,
+            parse_theme_hex_digit(role, *g)? * 17,
+            parse_theme_hex_digit(role, *b)? * 17,
+        ]),
+        [r1, r2, g1, g2, b1, b2] => Ok([
+            parse_theme_hex_component(role, *r1, *r2)?,
+            parse_theme_hex_component(role, *g1, *g2)?,
+            parse_theme_hex_component(role, *b1, *b2)?,
+        ]),
+        _ => bail!("theme color {role} must be #RRGGBB or #RGB hex"),
+    }
+}
+
+fn parse_theme_hex_component(role: &str, high: char, low: char) -> anyhow::Result<u8> {
+    Ok(parse_theme_hex_digit(role, high)? * 16 + parse_theme_hex_digit(role, low)?)
+}
+
+fn parse_theme_hex_digit(role: &str, value: char) -> anyhow::Result<u8> {
+    match value.to_digit(16) {
+        Some(value) => Ok(value as u8),
+        None => bail!("theme color {role} must be #RRGGBB or #RGB hex"),
+    }
+}
+
+fn parse_theme_rgb_array(role: &str, values: &[toml::Value]) -> anyhow::Result<[u8; 3]> {
+    if values.len() != 3 {
+        bail!("theme color {role} RGB array must contain 3 values");
+    }
+
+    let mut color = [0; 3];
+    for (index, value) in values.iter().enumerate() {
+        let Some(component) = value.as_integer() else {
+            bail!("theme color {role} RGB array values must be integers from 0 to 255");
+        };
+        let Ok(component) = u8::try_from(component) else {
+            bail!("theme color {role} RGB array values must be integers from 0 to 255");
+        };
+        color[index] = component;
+    }
+    Ok(color)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -898,9 +1094,19 @@ fn discover_workspace_plugins_with_limits(
         });
     }
 
+    let mut seen_plugin_ids = BTreeSet::new();
     for root in roots {
         match load_plugin_manifest(&root) {
-            Ok(plugin) => discovery.plugins.push(plugin),
+            Ok(plugin) => {
+                if !seen_plugin_ids.insert(plugin.manifest.id.clone()) {
+                    discovery.errors.push(PluginDiscoveryError {
+                        root,
+                        error: format!("plugin id {} is duplicated", plugin.manifest.id),
+                    });
+                } else {
+                    discovery.plugins.push(plugin);
+                }
+            }
             Err(error) => discovery.errors.push(PluginDiscoveryError {
                 root,
                 error: error.to_string(),
@@ -1178,6 +1384,9 @@ fn normalize_manifest_path(
 ) -> anyhow::Result<PathBuf> {
     if path.as_os_str().is_empty() {
         bail!("{field} cannot be empty");
+    }
+    if path.is_absolute() {
+        bail!("{field} must be relative to the plugin root");
     }
     normalize_child_path(plugin_root, &path)
         .ok_or_else(|| anyhow::anyhow!("{field} must stay inside the plugin root"))

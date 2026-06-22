@@ -10,7 +10,7 @@ use crate::{
     KuroyaApp,
     ui_state::{handle_list_navigation_keys, selected_row_scroll_offset, selection_page_step},
 };
-use eframe::egui::{self, Color32, Context, InputState, Key, RichText, ScrollArea, TextEdit};
+use eframe::egui::{self, Context, InputState, Key, RichText, ScrollArea, TextEdit};
 use kuroya_core::GitCommitSummary;
 use labels::SourceControlHistoryRowDisplay;
 #[cfg(test)]
@@ -367,13 +367,13 @@ impl KuroyaApp {
                     ui.label(
                         RichText::new(format!("{} commits", commit_indices.len()))
                             .small()
-                            .color(Color32::from_rgb(126, 136, 150)),
+                            .color(ui.visuals().weak_text_color()),
                     );
                     if self.source_control_history_loading {
                         ui.label(
                             RichText::new("Loading")
                                 .small()
-                                .color(Color32::from_rgb(126, 136, 150)),
+                                .color(ui.visuals().weak_text_color()),
                         );
                     } else if !self.settings.scm_graph_page_on_scroll
                         && source_control_history_can_load_more(

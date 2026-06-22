@@ -160,7 +160,11 @@ const CODE_ACTION_KINDS: [&str; 9] = [
 pub struct LspServerConfig {
     pub language: String,
     pub command: String,
+    #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
     pub root_markers: Vec<String>,
 }
 
@@ -948,33 +952,244 @@ pub struct LspPosition {
 }
 
 pub fn default_server_configs() -> Vec<LspServerConfig> {
-    vec![rust_lsp_server_config(), python_lsp_server_config()]
+    vec![
+        lsp_server_config(
+            "rust",
+            "rust-analyzer",
+            &[],
+            &["Cargo.toml", "rust-project.json", ".git"],
+        ),
+        lsp_server_config(
+            "python",
+            "pyright-langserver",
+            &["--stdio"],
+            &[
+                "pyproject.toml",
+                "setup.py",
+                "requirements.txt",
+                "Pipfile",
+                "poetry.lock",
+                "uv.lock",
+                ".git",
+            ],
+        ),
+        lsp_server_config(
+            "typescript",
+            "typescript-language-server",
+            &["--stdio"],
+            &[
+                "tsconfig.json",
+                "jsconfig.json",
+                "package.json",
+                "deno.json",
+                "deno.jsonc",
+                ".git",
+            ],
+        ),
+        lsp_server_config(
+            "javascript",
+            "typescript-language-server",
+            &["--stdio"],
+            &[
+                "jsconfig.json",
+                "tsconfig.json",
+                "package.json",
+                "deno.json",
+                "deno.jsonc",
+                ".git",
+            ],
+        ),
+        lsp_server_config("go", "gopls", &[], &["go.work", "go.mod", ".git"]),
+        lsp_server_config(
+            "java",
+            "jdtls",
+            &[],
+            &[
+                "pom.xml",
+                "build.gradle",
+                "build.gradle.kts",
+                ".project",
+                ".git",
+            ],
+        ),
+        lsp_server_config(
+            "c",
+            "clangd",
+            &[],
+            &[
+                "compile_commands.json",
+                "compile_flags.txt",
+                ".clangd",
+                "CMakeLists.txt",
+                "Makefile",
+                ".git",
+            ],
+        ),
+        lsp_server_config(
+            "cpp",
+            "clangd",
+            &[],
+            &[
+                "compile_commands.json",
+                "compile_flags.txt",
+                ".clangd",
+                "CMakeLists.txt",
+                "Makefile",
+                ".git",
+            ],
+        ),
+        lsp_server_config(
+            "csharp",
+            "csharp-ls",
+            &[],
+            &[
+                "global.json",
+                "Directory.Build.props",
+                "Directory.Build.targets",
+                ".git",
+            ],
+        ),
+        lsp_server_config(
+            "php",
+            "intelephense",
+            &["--stdio"],
+            &["composer.json", "composer.lock", ".git"],
+        ),
+        lsp_server_config(
+            "ruby",
+            "ruby-lsp",
+            &[],
+            &["Gemfile", ".ruby-version", ".git"],
+        ),
+        lsp_server_config(
+            "lua",
+            "lua-language-server",
+            &[],
+            &[".luarc.json", ".luarc.jsonc", ".git"],
+        ),
+        lsp_server_config(
+            "dart",
+            "dart",
+            &["language-server", "--protocol=lsp"],
+            &["pubspec.yaml", ".git"],
+        ),
+        lsp_server_config(
+            "kotlin",
+            "kotlin-language-server",
+            &[],
+            &[
+                "settings.gradle",
+                "settings.gradle.kts",
+                "build.gradle.kts",
+                ".git",
+            ],
+        ),
+        lsp_server_config(
+            "swift",
+            "sourcekit-lsp",
+            &[],
+            &["Package.swift", "compile_commands.json", ".git"],
+        ),
+        lsp_server_config(
+            "toml",
+            "taplo",
+            &["lsp", "stdio"],
+            &["taplo.toml", "Cargo.toml", ".git"],
+        ),
+        lsp_server_config(
+            "json",
+            "vscode-json-language-server",
+            &["--stdio"],
+            &["package.json", "tsconfig.json", ".git"],
+        ),
+        lsp_server_config(
+            "html",
+            "vscode-html-language-server",
+            &["--stdio"],
+            &["package.json", ".git"],
+        ),
+        lsp_server_config(
+            "css",
+            "vscode-css-language-server",
+            &["--stdio"],
+            &["package.json", ".git"],
+        ),
+        lsp_server_config(
+            "yaml",
+            "yaml-language-server",
+            &["--stdio"],
+            &[".yamllint", "package.json", ".git"],
+        ),
+        lsp_server_config("xml", "lemminx", &[], &["pom.xml", "build.gradle", ".git"]),
+        lsp_server_config(
+            "markdown",
+            "marksman",
+            &["server"],
+            &[".marksman.toml", ".git"],
+        ),
+        lsp_server_config(
+            "vue",
+            "vue-language-server",
+            &["--stdio"],
+            &["package.json", "tsconfig.json", "jsconfig.json", ".git"],
+        ),
+        lsp_server_config(
+            "svelte",
+            "svelteserver",
+            &["--stdio"],
+            &[
+                "package.json",
+                "svelte.config.js",
+                "svelte.config.ts",
+                ".git",
+            ],
+        ),
+        lsp_server_config(
+            "dockerfile",
+            "docker-langserver",
+            &["--stdio"],
+            &["Dockerfile", "Containerfile", ".git"],
+        ),
+        lsp_server_config(
+            "terraform",
+            "terraform-ls",
+            &["serve"],
+            &[".terraform", "terraform.tf", ".git"],
+        ),
+        lsp_server_config("powershell", "powershell-es", &["-Stdio"], &[".git"]),
+        lsp_server_config("shellscript", "bash-language-server", &["start"], &[".git"]),
+        lsp_server_config("sql", "sqls", &[], &["sqls.yml", ".git"]),
+    ]
+}
+
+pub fn server_config_for_language(
+    configs: &[LspServerConfig],
+    language: LanguageId,
+) -> Option<&LspServerConfig> {
+    let wanted = lsp_language_id(language);
+    configs.iter().find(|config| config.language == wanted)
+}
+
+fn lsp_server_config(
+    language: &str,
+    command: &str,
+    args: &[&str],
+    root_markers: &[&str],
+) -> LspServerConfig {
+    LspServerConfig {
+        language: language.to_owned(),
+        command: command.to_owned(),
+        args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+        extensions: Vec::new(),
+        root_markers: root_markers
+            .iter()
+            .map(|marker| (*marker).to_owned())
+            .collect(),
+    }
 }
 
 pub fn server_for_language(language: LanguageId) -> Option<LspServerConfig> {
-    match language {
-        LanguageId::Rust => Some(rust_lsp_server_config()),
-        LanguageId::Python => Some(python_lsp_server_config()),
-        _ => None,
-    }
-}
-
-fn rust_lsp_server_config() -> LspServerConfig {
-    LspServerConfig {
-        language: "rust".to_owned(),
-        command: "rust-analyzer".to_owned(),
-        args: Vec::new(),
-        root_markers: vec!["Cargo.toml".to_owned(), "rust-project.json".to_owned()],
-    }
-}
-
-fn python_lsp_server_config() -> LspServerConfig {
-    LspServerConfig {
-        language: "python".to_owned(),
-        command: "pyright-langserver".to_owned(),
-        args: vec!["--stdio".to_owned()],
-        root_markers: vec!["pyproject.toml".to_owned(), "setup.py".to_owned()],
-    }
+    server_config_for_language(&default_server_configs(), language).cloned()
 }
 
 #[derive(Clone, Copy)]
@@ -1324,9 +1539,40 @@ pub fn lsp_language_id(language: LanguageId) -> &'static str {
         LanguageId::C => "c",
         LanguageId::Cpp => "cpp",
         LanguageId::CSharp => "csharp",
+        LanguageId::Php => "php",
+        LanguageId::Ruby => "ruby",
+        LanguageId::Lua => "lua",
+        LanguageId::Dart => "dart",
+        LanguageId::Kotlin => "kotlin",
+        LanguageId::Swift => "swift",
+        LanguageId::Vue => "vue",
+        LanguageId::Svelte => "svelte",
+        LanguageId::Xml => "xml",
+        LanguageId::Dockerfile => "dockerfile",
+        LanguageId::Terraform => "terraform",
         LanguageId::Shell => "shellscript",
         LanguageId::Diff => "diff",
         LanguageId::PlainText => "plaintext",
+    }
+}
+
+pub fn lsp_language_id_for_path(language: LanguageId, path: Option<&Path>) -> &'static str {
+    let Some(extension) = path
+        .and_then(Path::extension)
+        .and_then(|extension| extension.to_str())
+    else {
+        return lsp_language_id(language);
+    };
+
+    match language {
+        LanguageId::TypeScript if extension.eq_ignore_ascii_case("tsx") => "typescriptreact",
+        LanguageId::JavaScript if extension.eq_ignore_ascii_case("jsx") => "javascriptreact",
+        LanguageId::Css if extension.eq_ignore_ascii_case("scss") => "scss",
+        LanguageId::Css if extension.eq_ignore_ascii_case("sass") => "sass",
+        LanguageId::Css if extension.eq_ignore_ascii_case("less") => "less",
+        LanguageId::Json if extension.eq_ignore_ascii_case("jsonc") => "jsonc",
+        LanguageId::Markdown if extension.eq_ignore_ascii_case("mdx") => "mdx",
+        _ => lsp_language_id(language),
     }
 }
 
