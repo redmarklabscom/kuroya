@@ -1054,6 +1054,11 @@ fn built_in_themes_are_named_and_cyclable() {
         "Warm Paper",
         "Clear Day",
         "Sage Light",
+        "Sakura Milk",
+        "Mochi Mint",
+        "Sky Ribbon",
+        "Starry Idol",
+        "Peach Festival",
     ]
     .into_iter()
     .map(str::to_owned)
