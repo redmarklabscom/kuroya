@@ -42,6 +42,9 @@ impl eframe::App for KuroyaApp {
         self.record_profile_mark(profiling, &mut profile_mark, "frame", "setup");
         let ui_events = self.handle_events_with_context(ctx);
         if self.exit_confirmed {
+            if !self.launch_pending_update_installer_before_exit() {
+                return;
+            }
             self.exit_process();
         }
         self.dispatch_shortcuts(ctx);
@@ -62,6 +65,7 @@ impl eframe::App for KuroyaApp {
         let lsp_restarts = self.flush_pending_lsp_restarts();
         let lsp_diagnostics = self.flush_pending_lsp_diagnostics();
         let lsp_symbol_refreshes = self.flush_pending_lsp_symbol_refreshes();
+        let update_checks = self.flush_due_update_checks(frame_start);
         self.record_profile_mark(profiling, &mut profile_mark, "frame", "runtime");
         let commands = self.drain_commands(ctx);
         self.record_profile_mark(profiling, &mut profile_mark, "frame", "commands");
@@ -89,6 +93,7 @@ impl eframe::App for KuroyaApp {
                 .saturating_add(format_on_type_requests)
                 .saturating_add(format_on_save_timeouts)
                 .saturating_add(lsp_symbol_refreshes),
+            update_checks,
             lsp_restarts,
             lsp_diagnostics,
             workspace_refreshes,

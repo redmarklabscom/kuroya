@@ -20,14 +20,15 @@ pub(super) fn render_exit_saving_guard(app: &mut KuroyaApp, ctx: &Context) {
         }
     };
     let mut cancel = false;
+    let restart = app.pending_update_install.is_some();
 
-    egui::Window::new("Exit Kuroya")
+    egui::Window::new(exit_saving_window_title(restart))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .fixed_size([520.0, 132.0])
         .show(ctx, |ui| {
-            ui.label(RichText::new("Saving before exit").strong());
+            ui.label(RichText::new(exit_saving_title(restart)).strong());
             ui.label(exit_saving_body(remaining));
 
             if ui.input(|input| input.key_pressed(Key::Escape)) {
@@ -43,7 +44,31 @@ pub(super) fn render_exit_saving_guard(app: &mut KuroyaApp, ctx: &Context) {
 
     if cancel {
         app.pending_exit = None;
-        app.status = "Exit canceled; in-flight saves will still finish".to_owned();
+        app.status = exit_saving_canceled_status(restart);
+    }
+}
+
+fn exit_saving_window_title(restart: bool) -> &'static str {
+    if restart {
+        "Restart Kuroya"
+    } else {
+        "Exit Kuroya"
+    }
+}
+
+fn exit_saving_title(restart: bool) -> &'static str {
+    if restart {
+        "Saving before restart"
+    } else {
+        "Saving before exit"
+    }
+}
+
+fn exit_saving_canceled_status(restart: bool) -> String {
+    if restart {
+        "Update restart canceled; in-flight saves will still finish".to_owned()
+    } else {
+        "Exit canceled; in-flight saves will still finish".to_owned()
     }
 }
 
@@ -66,11 +91,29 @@ fn exit_saving_body(remaining: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::exit_saving_body;
+    use super::{
+        exit_saving_body, exit_saving_canceled_status, exit_saving_title, exit_saving_window_title,
+    };
 
     #[test]
     fn exit_saving_body_uses_file_count_labels() {
         assert_eq!(exit_saving_body(1), "Saving 1 file.");
         assert_eq!(exit_saving_body(2), "Saving 2 files.");
+    }
+
+    #[test]
+    fn exit_saving_copy_switches_for_restart() {
+        assert_eq!(exit_saving_window_title(false), "Exit Kuroya");
+        assert_eq!(exit_saving_window_title(true), "Restart Kuroya");
+        assert_eq!(exit_saving_title(false), "Saving before exit");
+        assert_eq!(exit_saving_title(true), "Saving before restart");
+        assert_eq!(
+            exit_saving_canceled_status(false),
+            "Exit canceled; in-flight saves will still finish"
+        );
+        assert_eq!(
+            exit_saving_canceled_status(true),
+            "Update restart canceled; in-flight saves will still finish"
+        );
     }
 }

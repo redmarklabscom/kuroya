@@ -1,16 +1,44 @@
-use crate::{KuroyaApp, ui_event_channel::send_ui_event, ui_events::UiEvent};
+use crate::{
+    KuroyaApp,
+    popup_buttons::{PopupButtonKind, popup_button, popup_button_enabled},
+    transient_state::PendingExit,
+    ui_event_channel::send_ui_event,
+    ui_events::UiEvent,
+};
 use anyhow::Context;
+use eframe::egui::{self, Align, Context as EguiContext, Key, RichText};
 use kuroya_core::EditorSettings;
 use serde::Deserialize;
 use std::{
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const GITHUB_API_BASE: &str = "https://api.github.com/repos";
 const DEFAULT_UPDATE_GITHUB_REPOSITORY: &str = "redmarklabscom/kuroya";
 const UPDATE_USER_AGENT: &str = concat!("Kuroya/", env!("CARGO_PKG_VERSION"));
 const UPDATE_DOWNLOAD_DIR: &str = "kuroya-updates";
+pub(crate) const AUTOMATIC_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+pub(crate) const AUTOMATIC_UPDATE_CHECK_STARTUP_DELAY: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AvailableUpdate {
+    pub(crate) current_version: String,
+    pub(crate) latest_version: String,
+    pub(crate) asset: UpdateInstallerAsset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpdateInstallerAsset {
+    pub(crate) name: String,
+    pub(crate) browser_download_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpdateInstallerReady {
+    pub(crate) latest_version: String,
+    pub(crate) installer_path: PathBuf,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UpdateCheckOutcome {
@@ -18,10 +46,7 @@ pub(crate) enum UpdateCheckOutcome {
         current_version: String,
         latest_version: String,
     },
-    InstallerLaunched {
-        latest_version: String,
-        installer_path: PathBuf,
-    },
+    UpdateAvailable(AvailableUpdate),
     MissingInstallerAsset {
         latest_version: String,
         release_url: String,
@@ -35,13 +60,7 @@ impl UpdateCheckOutcome {
                 current_version,
                 latest_version,
             } => format!("Kuroya is up to date ({current_version}, latest {latest_version})"),
-            Self::InstallerLaunched {
-                latest_version,
-                installer_path,
-            } => format!(
-                "Downloaded Kuroya {latest_version}; launched installer {}",
-                installer_path.display()
-            ),
+            Self::UpdateAvailable(update) => update.available_status_text(),
             Self::MissingInstallerAsset {
                 latest_version,
                 release_url,
@@ -49,6 +68,36 @@ impl UpdateCheckOutcome {
                 "Kuroya {latest_version} is available, but no Windows installer asset was found: {release_url}"
             ),
         }
+    }
+}
+
+impl AvailableUpdate {
+    pub(crate) fn available_status_text(&self) -> String {
+        format!(
+            "Kuroya {} is available; installer {} is ready",
+            self.latest_version, self.asset.name
+        )
+    }
+}
+
+impl UpdateInstallerReady {
+    pub(crate) fn ready_status_text(&self) -> String {
+        format!(
+            "Kuroya {} installer is ready; restart to install",
+            self.latest_version
+        )
+    }
+
+    pub(crate) fn restart_status_text(&self) -> String {
+        format!("Restarting Kuroya to install {}", self.latest_version)
+    }
+
+    pub(crate) fn launched_status_text(&self) -> String {
+        format!(
+            "Launched Kuroya {} installer {}",
+            self.latest_version,
+            self.installer_path.display()
+        )
     }
 }
 
@@ -67,18 +116,65 @@ struct GitHubReleaseAsset {
 
 impl KuroyaApp {
     pub(crate) fn check_for_updates(&mut self) {
+        self.start_update_check(true);
+    }
+
+    pub(crate) fn flush_due_update_checks(&mut self, now: Instant) -> usize {
+        if !automatic_update_check_due(
+            now,
+            self.next_automatic_update_check_at,
+            self.update_check_in_flight,
+            self.update_download_in_flight,
+            self.available_update.is_some() || self.pending_update_install.is_some(),
+        ) {
+            return 0;
+        }
+
+        self.next_automatic_update_check_at = next_automatic_update_check_at(now);
+        usize::from(self.start_update_check(false))
+    }
+
+    fn start_update_check(&mut self, manual: bool) -> bool {
         if self.update_check_in_flight {
-            self.status = "Already checking for updates".to_owned();
-            return;
+            if manual {
+                self.status = "Already checking for updates".to_owned();
+            }
+            return false;
+        }
+
+        if self.update_download_in_flight {
+            if manual {
+                self.status = "Update installer is already downloading".to_owned();
+            }
+            return false;
+        }
+
+        if let Some(update) = &self.available_update {
+            if manual {
+                self.status = update.available_status_text();
+            }
+            return false;
+        }
+
+        if let Some(update) = &self.pending_update_install {
+            if manual {
+                self.status = update.ready_status_text();
+            }
+            return false;
         }
 
         let Some(repository) = configured_update_repository(&self.settings) else {
-            self.status = update_repository_not_configured_status();
-            return;
+            if manual {
+                self.status = update_repository_not_configured_status();
+            }
+            return false;
         };
 
         self.update_check_in_flight = true;
-        self.status = format!("Checking GitHub releases for {repository}");
+        self.update_check_manual = manual;
+        if manual {
+            self.status = format!("Checking GitHub releases for {repository}");
+        }
         self.record_async_task_started("Update Check", "GitHub Releases");
         let tx = self.tx.clone();
         self.runtime.spawn(async move {
@@ -90,17 +186,277 @@ impl KuroyaApp {
             };
             send_ui_event(&tx, event);
         });
+        true
     }
 
     pub(crate) fn apply_update_check_finished(&mut self, outcome: UpdateCheckOutcome) {
-        self.update_check_in_flight = false;
-        self.status = outcome.status_text();
+        let manual = self.finish_update_check();
+        if matches!(outcome, UpdateCheckOutcome::UpToDate { .. }) && !manual {
+            return;
+        }
+
+        if matches!(outcome, UpdateCheckOutcome::MissingInstallerAsset { .. }) && !manual {
+            return;
+        }
+
+        match outcome {
+            UpdateCheckOutcome::UpdateAvailable(update) => {
+                self.status = update.available_status_text();
+                self.available_update = Some(update);
+            }
+            outcome => {
+                self.status = outcome.status_text();
+            }
+        }
     }
 
     pub(crate) fn apply_update_check_failed(&mut self, error: String) {
-        self.update_check_in_flight = false;
+        let manual = self.finish_update_check();
+        if !manual {
+            return;
+        }
+
+        let error = display_update_error(&error);
         self.status = format!("Could not check for updates: {error}");
     }
+
+    pub(crate) fn install_available_update(&mut self) {
+        if self.update_download_in_flight {
+            self.status = "Update installer is already downloading".to_owned();
+            return;
+        }
+
+        let Some(update) = self.available_update.clone() else {
+            self.status = "No update is ready to install".to_owned();
+            return;
+        };
+
+        self.available_update = None;
+        self.update_download_in_flight = true;
+        self.status = format!(
+            "Downloading Kuroya {} installer {}",
+            update.latest_version, update.asset.name
+        );
+        self.record_async_task_started("Update Download", &update.latest_version);
+        let tx = self.tx.clone();
+        self.runtime.spawn(async move {
+            let event = match download_update_installer(update).await {
+                Ok(update) => UiEvent::UpdateInstallerReady(update),
+                Err(UpdateDownloadError {
+                    latest_version,
+                    error,
+                }) => UiEvent::UpdateDownloadFailed {
+                    latest_version,
+                    error: error.to_string(),
+                },
+            };
+            send_ui_event(&tx, event);
+        });
+    }
+
+    pub(crate) fn apply_update_installer_ready(&mut self, update: UpdateInstallerReady) {
+        self.update_download_in_flight = false;
+        self.available_update = None;
+        self.pending_update_install = Some(update);
+        self.next_automatic_update_check_at = next_automatic_update_check_at(Instant::now());
+        self.restart_to_install_update();
+    }
+
+    pub(crate) fn apply_update_download_failed(&mut self, latest_version: String, error: String) {
+        self.update_download_in_flight = false;
+        let error = display_update_error(&error);
+        self.status = format!("Could not download Kuroya {latest_version}: {error}");
+    }
+
+    pub(crate) fn restart_to_install_update(&mut self) {
+        let Some(update) = self.pending_update_install.as_ref() else {
+            self.status = "No update installer is ready".to_owned();
+            return;
+        };
+        if self.exit_confirmed || self.pending_exit.is_some() {
+            self.status = "Update restart is already pending".to_owned();
+            return;
+        }
+
+        let restart_status = update.restart_status_text();
+        self.clear_pending_workspace_switch_for_exit();
+        self.status = restart_status;
+        let dirty_count = self
+            .buffers
+            .iter()
+            .filter(|buffer| buffer.is_dirty())
+            .count();
+        let terminal_count = self.terminal_exit_confirmation_count();
+        if dirty_count == 0 && terminal_count == 0 {
+            self.exit_confirmed = true;
+        } else {
+            self.pending_exit = Some(PendingExit::Confirm);
+        }
+    }
+
+    pub(crate) fn launch_pending_update_installer_before_exit(&mut self) -> bool {
+        let Some(update) = self.pending_update_install.take() else {
+            return true;
+        };
+        match launch_update_installer(&update.installer_path) {
+            Ok(()) => {
+                self.status = update.launched_status_text();
+                true
+            }
+            Err(error) => {
+                let error = display_update_error(&error.to_string());
+                self.exit_confirmed = false;
+                self.pending_update_install = Some(update);
+                self.status = format!("Could not launch update installer: {error}");
+                false
+            }
+        }
+    }
+
+    pub(crate) fn dismiss_update_prompt(&mut self) {
+        if let Some(update) = self.available_update.take() {
+            self.next_automatic_update_check_at = next_automatic_update_check_at(Instant::now());
+            self.status = format!("Kuroya {} update postponed", update.latest_version);
+        }
+    }
+
+    pub(crate) fn dismiss_pending_update_install(&mut self) {
+        if let Some(update) = self.pending_update_install.take() {
+            self.next_automatic_update_check_at = next_automatic_update_check_at(Instant::now());
+            self.status = format!("Kuroya {} update postponed", update.latest_version);
+        }
+    }
+
+    pub(crate) fn render_update_prompt(&mut self, ctx: &EguiContext) {
+        let Some(update) = self.available_update.clone() else {
+            return;
+        };
+
+        let mut action = UpdatePromptAction::None;
+        let mut window_open = true;
+        egui::Window::new("Update Available")
+            .open(&mut window_open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .fixed_size([460.0, 172.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!("Kuroya {} is available", update.latest_version))
+                        .strong(),
+                );
+                ui.label(format!(
+                    "You are running Kuroya {}. Install the latest release now?",
+                    update.current_version
+                ));
+                ui.label(RichText::new(&update.asset.name).small());
+
+                if ui.input(|input| input.key_pressed(Key::Escape)) {
+                    action = UpdatePromptAction::Later;
+                }
+
+                ui.add_space(8.0);
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    if popup_button_enabled(
+                        ui,
+                        !self.update_download_in_flight,
+                        "Install",
+                        PopupButtonKind::Primary,
+                    )
+                    .clicked()
+                    {
+                        action = UpdatePromptAction::Install;
+                    }
+                    if popup_button(ui, "Later", PopupButtonKind::Secondary).clicked() {
+                        action = UpdatePromptAction::Later;
+                    }
+                });
+            });
+
+        if !window_open && matches!(action, UpdatePromptAction::None) {
+            action = UpdatePromptAction::Later;
+        }
+
+        match action {
+            UpdatePromptAction::Install => self.install_available_update(),
+            UpdatePromptAction::Restart => {}
+            UpdatePromptAction::Later => self.dismiss_update_prompt(),
+            UpdatePromptAction::None => {}
+        }
+    }
+
+    pub(crate) fn render_update_ready_prompt(&mut self, ctx: &EguiContext) {
+        if self.pending_exit.is_some() || self.exit_confirmed {
+            return;
+        }
+        let Some(update) = self.pending_update_install.clone() else {
+            return;
+        };
+
+        let mut action = UpdatePromptAction::None;
+        let mut window_open = true;
+        egui::Window::new("Update Ready")
+            .open(&mut window_open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .fixed_size([460.0, 156.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "Kuroya {} is ready to install",
+                        update.latest_version
+                    ))
+                    .strong(),
+                );
+                ui.label("Restart Kuroya to replace the current installation.");
+                ui.label(RichText::new(installer_path_label(&update.installer_path)).small());
+
+                if ui.input(|input| input.key_pressed(Key::Escape)) {
+                    action = UpdatePromptAction::Later;
+                }
+
+                ui.add_space(8.0);
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    if popup_button(ui, "Restart", PopupButtonKind::Primary).clicked() {
+                        action = UpdatePromptAction::Restart;
+                    }
+                    if popup_button(ui, "Later", PopupButtonKind::Secondary).clicked() {
+                        action = UpdatePromptAction::Later;
+                    }
+                });
+            });
+
+        if !window_open && matches!(action, UpdatePromptAction::None) {
+            action = UpdatePromptAction::Later;
+        }
+
+        match action {
+            UpdatePromptAction::Restart => self.restart_to_install_update(),
+            UpdatePromptAction::Later => self.dismiss_pending_update_install(),
+            UpdatePromptAction::Install | UpdatePromptAction::None => {}
+        }
+    }
+
+    fn finish_update_check(&mut self) -> bool {
+        let manual = self.update_check_manual;
+        self.update_check_in_flight = false;
+        self.update_check_manual = false;
+        manual
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdatePromptAction {
+    None,
+    Install,
+    Restart,
+    Later,
+}
+
+struct UpdateDownloadError {
+    latest_version: String,
+    error: anyhow::Error,
 }
 
 pub(crate) fn configured_update_repository(settings: &EditorSettings) -> Option<String> {
@@ -116,27 +472,38 @@ pub(crate) fn update_repository_not_configured_status() -> String {
 
 async fn check_latest_github_release(repository: &str) -> anyhow::Result<UpdateCheckOutcome> {
     let release = fetch_latest_release(repository).await?;
-    let current_version = env!("CARGO_PKG_VERSION");
+    Ok(update_check_outcome_from_release(
+        release,
+        env!("CARGO_PKG_VERSION"),
+    ))
+}
+
+fn update_check_outcome_from_release(
+    release: GitHubRelease,
+    current_version: &str,
+) -> UpdateCheckOutcome {
     let latest_version = display_release_version(&release.tag_name);
     if !release_is_newer(current_version, &release.tag_name) {
-        return Ok(UpdateCheckOutcome::UpToDate {
+        return UpdateCheckOutcome::UpToDate {
             current_version: current_version.to_owned(),
             latest_version,
-        });
+        };
     }
 
-    let Some(asset) = select_windows_installer_asset(&release.assets).cloned() else {
-        return Ok(UpdateCheckOutcome::MissingInstallerAsset {
+    let Some(asset) = select_windows_installer_asset(&release.assets) else {
+        return UpdateCheckOutcome::MissingInstallerAsset {
             latest_version,
             release_url: release.html_url,
-        });
+        };
     };
 
-    let installer_path = download_release_asset(&asset).await?;
-    launch_installer(&installer_path)?;
-    Ok(UpdateCheckOutcome::InstallerLaunched {
+    UpdateCheckOutcome::UpdateAvailable(AvailableUpdate {
+        current_version: current_version.to_owned(),
         latest_version,
-        installer_path,
+        asset: UpdateInstallerAsset {
+            name: asset.name.clone(),
+            browser_download_url: asset.browser_download_url.clone(),
+        },
     })
 }
 
@@ -161,7 +528,23 @@ async fn fetch_latest_release(repository: &str) -> anyhow::Result<GitHubRelease>
         .context("could not parse GitHub release")
 }
 
-async fn download_release_asset(asset: &GitHubReleaseAsset) -> anyhow::Result<PathBuf> {
+async fn download_update_installer(
+    update: AvailableUpdate,
+) -> Result<UpdateInstallerReady, UpdateDownloadError> {
+    let latest_version = update.latest_version.clone();
+    let installer_path = download_release_asset(&update.asset)
+        .await
+        .map_err(|error| UpdateDownloadError {
+            latest_version: latest_version.clone(),
+            error,
+        })?;
+    Ok(UpdateInstallerReady {
+        latest_version,
+        installer_path,
+    })
+}
+
+async fn download_release_asset(asset: &UpdateInstallerAsset) -> anyhow::Result<PathBuf> {
     let client = reqwest::Client::builder()
         .user_agent(UPDATE_USER_AGENT)
         .timeout(Duration::from_secs(300))
@@ -190,10 +573,13 @@ async fn download_release_asset(asset: &GitHubReleaseAsset) -> anyhow::Result<Pa
     Ok(installer_path)
 }
 
-fn launch_installer(installer_path: &Path) -> anyhow::Result<()> {
+fn launch_update_installer(installer_path: &Path) -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new(installer_path)
+            .args(inno_update_installer_args(
+                current_update_install_dir().as_deref(),
+            ))
             .spawn()
             .with_context(|| format!("could not launch {}", installer_path.display()))?;
         Ok(())
@@ -203,6 +589,47 @@ fn launch_installer(installer_path: &Path) -> anyhow::Result<()> {
         let _ = installer_path;
         anyhow::bail!("automatic installer launch is only supported on Windows")
     }
+}
+
+fn inno_update_installer_args(install_dir: Option<&Path>) -> Vec<String> {
+    let mut args = vec![
+        "/SP-".to_owned(),
+        "/SILENT".to_owned(),
+        "/SUPPRESSMSGBOXES".to_owned(),
+        "/NORESTART".to_owned(),
+        "/CLOSEAPPLICATIONS".to_owned(),
+        "/RESTARTAPPLICATIONS".to_owned(),
+        "/KuroyaRestart=1".to_owned(),
+    ];
+    if let Some(install_dir) = install_dir {
+        args.push(format!("/DIR={}", install_dir.display()));
+    }
+    args
+}
+
+fn current_update_install_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    update_install_dir_from_exe(&exe)
+}
+
+fn update_install_dir_from_exe(exe: &Path) -> Option<PathBuf> {
+    let file_name = exe.file_name()?.to_string_lossy();
+    if !file_name.eq_ignore_ascii_case("kuroya.exe") {
+        return None;
+    }
+    let install_dir = exe.parent()?;
+    (!is_cargo_build_output_dir(install_dir)).then(|| install_dir.to_path_buf())
+}
+
+fn is_cargo_build_output_dir(dir: &Path) -> bool {
+    let components = dir
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    components
+        .windows(2)
+        .any(|window| window[0] == "target" && matches!(window[1].as_str(), "debug" | "release"))
 }
 
 fn select_windows_installer_asset(assets: &[GitHubReleaseAsset]) -> Option<&GitHubReleaseAsset> {
@@ -322,9 +749,52 @@ fn github_repository_segment_is_valid(segment: &str) -> bool {
         && !segment.contains("..")
 }
 
+pub(crate) fn initial_automatic_update_check_at(now: Instant) -> Instant {
+    checked_instant_add(now, AUTOMATIC_UPDATE_CHECK_STARTUP_DELAY)
+}
+
+pub(crate) fn next_automatic_update_check_at(now: Instant) -> Instant {
+    checked_instant_add(now, AUTOMATIC_UPDATE_CHECK_INTERVAL)
+}
+
+pub(crate) fn automatic_update_check_due(
+    now: Instant,
+    next_check_at: Instant,
+    check_in_flight: bool,
+    install_in_flight: bool,
+    prompt_open: bool,
+) -> bool {
+    now >= next_check_at && !check_in_flight && !install_in_flight && !prompt_open
+}
+
+pub(crate) fn automatic_update_wakeup_after(
+    next_check_at: Instant,
+    now: Instant,
+    blocked: bool,
+) -> Option<Duration> {
+    (!blocked).then_some(next_check_at.saturating_duration_since(now))
+}
+
+fn checked_instant_add(now: Instant, delay: Duration) -> Instant {
+    now.checked_add(delay).unwrap_or(now)
+}
+
+fn display_update_error(error: &str) -> String {
+    crate::path_display::display_error_label_cow(error).into_owned()
+}
+
+fn installer_path_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|file_name| file_name.to_str())
+        .filter(|file_name| !file_name.trim().is_empty())
+        .unwrap_or("installer")
+        .to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn normalizes_supported_github_repository_inputs() {
@@ -395,5 +865,119 @@ mod tests {
         );
         assert_eq!(safe_installer_file_name(""), "Kuroya-Setup.exe");
         assert_eq!(safe_installer_file_name("installer"), "installer.exe");
+    }
+
+    #[test]
+    fn release_outcome_reports_available_installer_without_launching_it() {
+        let release = GitHubRelease {
+            tag_name: "v0.2.0".to_owned(),
+            html_url: "https://github.com/owner/repo/releases/tag/v0.2.0".to_owned(),
+            assets: vec![GitHubReleaseAsset {
+                name: "Kuroya-Setup-0.2.0.exe".to_owned(),
+                browser_download_url: "https://example.test/Kuroya-Setup-0.2.0.exe".to_owned(),
+            }],
+        };
+
+        let outcome = update_check_outcome_from_release(release, "0.1.0");
+
+        assert_eq!(
+            outcome,
+            UpdateCheckOutcome::UpdateAvailable(AvailableUpdate {
+                current_version: "0.1.0".to_owned(),
+                latest_version: "v0.2.0".to_owned(),
+                asset: UpdateInstallerAsset {
+                    name: "Kuroya-Setup-0.2.0.exe".to_owned(),
+                    browser_download_url: "https://example.test/Kuroya-Setup-0.2.0.exe".to_owned(),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn release_outcome_reports_missing_installer_for_new_release_without_exe() {
+        let release = GitHubRelease {
+            tag_name: "v0.2.0".to_owned(),
+            html_url: "https://github.com/owner/repo/releases/tag/v0.2.0".to_owned(),
+            assets: vec![GitHubReleaseAsset {
+                name: "source.zip".to_owned(),
+                browser_download_url: "https://example.test/source.zip".to_owned(),
+            }],
+        };
+
+        assert_eq!(
+            update_check_outcome_from_release(release, "0.1.0"),
+            UpdateCheckOutcome::MissingInstallerAsset {
+                latest_version: "v0.2.0".to_owned(),
+                release_url: "https://github.com/owner/repo/releases/tag/v0.2.0".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn automatic_update_check_gate_waits_for_due_time_and_idle_updater() {
+        let now = Instant::now();
+        let due = now - Duration::from_secs(1);
+        let future = now + Duration::from_secs(1);
+
+        assert!(automatic_update_check_due(now, due, false, false, false));
+        assert!(!automatic_update_check_due(
+            now, future, false, false, false
+        ));
+        assert!(!automatic_update_check_due(now, due, true, false, false));
+        assert!(!automatic_update_check_due(now, due, false, true, false));
+        assert!(!automatic_update_check_due(now, due, false, false, true));
+    }
+
+    #[test]
+    fn automatic_update_wakeup_reports_remaining_delay_when_unblocked() {
+        let now = Instant::now();
+        let due = now + Duration::from_secs(30);
+
+        assert_eq!(
+            automatic_update_wakeup_after(due, now, false),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(automatic_update_wakeup_after(due, now, true), None);
+    }
+
+    #[test]
+    fn inno_update_installer_args_use_silent_restart_mode_and_current_dir() {
+        let install_dir = Path::new(r"C:\Users\ESA\AppData\Local\Programs\Kuroya");
+
+        assert_eq!(
+            inno_update_installer_args(Some(install_dir)),
+            vec![
+                "/SP-",
+                "/SILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+                "/CLOSEAPPLICATIONS",
+                "/RESTARTAPPLICATIONS",
+                "/KuroyaRestart=1",
+                r"/DIR=C:\Users\ESA\AppData\Local\Programs\Kuroya",
+            ]
+        );
+    }
+
+    #[test]
+    fn update_install_dir_uses_installed_exe_but_skips_cargo_build_output() {
+        assert_eq!(
+            update_install_dir_from_exe(Path::new(
+                r"C:\Users\ESA\AppData\Local\Programs\Kuroya\kuroya.exe"
+            )),
+            Some(PathBuf::from(r"C:\Users\ESA\AppData\Local\Programs\Kuroya"))
+        );
+        assert_eq!(
+            update_install_dir_from_exe(Path::new(
+                r"C:\Users\ESA\Desktop\anime\test\target\release\kuroya.exe"
+            )),
+            None
+        );
+        assert_eq!(
+            update_install_dir_from_exe(Path::new(
+                r"C:\Users\ESA\AppData\Local\Programs\Kuroya\other.exe"
+            )),
+            None
+        );
     }
 }

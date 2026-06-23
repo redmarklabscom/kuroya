@@ -907,6 +907,15 @@ impl KuroyaApp {
                 UiEvent::UpdateCheckFailed { error } => {
                     self.apply_update_check_failed(error);
                 }
+                UiEvent::UpdateInstallerReady(update) => {
+                    self.apply_update_installer_ready(update);
+                }
+                UiEvent::UpdateDownloadFailed {
+                    latest_version,
+                    error,
+                } => {
+                    self.apply_update_download_failed(latest_version, error);
+                }
                 UiEvent::Lsp(_) => continue,
             }
         }

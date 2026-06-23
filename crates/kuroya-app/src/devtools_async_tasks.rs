@@ -426,6 +426,13 @@ pub(crate) fn async_task_event_label(event: &UiEvent) -> Option<AsyncTaskEventLa
         UiEvent::UpdateCheckFailed { .. } => {
             Some(failed("Update Check", async_task_detail("GitHub Releases")))
         }
+        UiEvent::UpdateInstallerReady(update) => Some(finished(
+            "Update Download",
+            async_task_detail(&update.latest_version),
+        )),
+        UiEvent::UpdateDownloadFailed { latest_version, .. } => {
+            Some(failed("Update Download", async_task_detail(latest_version)))
+        }
         UiEvent::Lsp(_) => None,
     }
 }
