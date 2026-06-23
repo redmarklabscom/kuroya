@@ -78,6 +78,12 @@ impl KuroyaApp {
         if self.gpu_acceleration_prompt.is_some() {
             self.render_gpu_acceleration_prompt(ctx);
         }
+        if self.available_update.is_some() {
+            self.render_update_prompt(ctx);
+        }
+        if self.pending_update_install.is_some() {
+            self.render_update_ready_prompt(ctx);
+        }
         if self.dirty_close_buffer.is_some() {
             self.render_unsaved_close(ctx);
         }

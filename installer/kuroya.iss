@@ -21,7 +21,9 @@ VersionInfoCompany=Kuroya Contributors
 VersionInfoDescription=Kuroya Setup
 VersionInfoProductName=Kuroya
 DefaultDirName={localappdata}\Programs\Kuroya
+DisableDirPage=yes
 DisableProgramGroupPage=yes
+UsePreviousAppDir=yes
 LicenseFile={#SourceRoot}\installer\LICENSE.txt
 OutputDir={#SourceRoot}\dist
 OutputBaseFilename=Kuroya-Setup-{#AppVersion}
@@ -34,7 +36,7 @@ WizardStyle=modern
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 CloseApplications=yes
-RestartApplications=no
+RestartApplications=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -56,8 +58,15 @@ Name: "{userdesktop}\Kuroya"; Filename: "{app}\kuroya.exe"; WorkingDir: "{app}";
 [Run]
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File ""{app}\pin-taskbar.ps1"" ""{userprograms}\Kuroya\Kuroya.lnk"""; Flags: runhidden; Tasks: taskbarpin
 Filename: "{app}\kuroya.exe"; Description: "Launch Kuroya"; Flags: nowait postinstall skipifsilent unchecked
+Filename: "{app}\kuroya.exe"; Flags: nowait skipifdoesntexist; Check: ShouldRestartKuroyaAfterUpdate
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{userprograms}\Kuroya"
 Type: files; Name: "{userdesktop}\Kuroya.lnk"
 Type: files; Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\Kuroya.lnk"
+
+[Code]
+function ShouldRestartKuroyaAfterUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:KuroyaRestart|0}') = '1';
+end;

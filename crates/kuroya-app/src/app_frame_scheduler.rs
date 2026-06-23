@@ -9,6 +9,7 @@ use crate::{
         PendingExit, PendingSourceControlCommitSave, PendingSourceControlStashSave,
         PendingWorkspaceSwitch,
     },
+    update_checker::automatic_update_wakeup_after,
 };
 use kuroya_core::{EditorAutoSaveMode, clamp_autosave_delay_ms, clamp_quick_suggestions_delay_ms};
 use std::time::{Duration, Instant};
@@ -145,6 +146,19 @@ impl KuroyaApp {
             return Duration::ZERO;
         }
         if record_earliest(&mut next, self.autosave_wakeup_after(now)) {
+            return Duration::ZERO;
+        }
+        if record_earliest(
+            &mut next,
+            automatic_update_wakeup_after(
+                self.next_automatic_update_check_at,
+                now,
+                self.update_check_in_flight
+                    || self.update_download_in_flight
+                    || self.available_update.is_some()
+                    || self.pending_update_install.is_some(),
+            ),
+        ) {
             return Duration::ZERO;
         }
 

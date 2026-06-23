@@ -7,7 +7,7 @@ use crate::{
     source_control_patch_runtime::{SourceControlPatchCopyOutcome, SourceControlPatchCopyRequest},
     startup_tasks::GitScanRootCacheEntry,
     syntax::PluginSyntaxLoad,
-    update_checker::UpdateCheckOutcome,
+    update_checker::{UpdateCheckOutcome, UpdateInstallerReady},
     virtual_diff_runtime::{VirtualDiffOpenOutcome, VirtualDiffOpenRequest},
     virtual_revision_runtime::{VirtualRevisionOpenOutcome, VirtualRevisionOpenRequest},
 };
@@ -536,6 +536,11 @@ pub(crate) enum UiEvent {
     },
     UpdateCheckFinished(UpdateCheckOutcome),
     UpdateCheckFailed {
+        error: String,
+    },
+    UpdateInstallerReady(UpdateInstallerReady),
+    UpdateDownloadFailed {
+        latest_version: String,
         error: String,
     },
     Lsp(LspUiEvent),

@@ -12,6 +12,7 @@ use crate::{
     },
     syntax::SyntaxHighlighter,
     syntax_tree_cache::TreeSitterSyntaxCache,
+    update_checker::initial_automatic_update_check_at,
     workspace_trust::workspace_is_trusted,
 };
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -117,6 +118,11 @@ impl KuroyaApp {
                 "Indexing workspace".to_owned()
             },
             update_check_in_flight: false,
+            update_check_manual: false,
+            update_download_in_flight: false,
+            available_update: None,
+            pending_update_install: None,
+            next_automatic_update_check_at: initial_automatic_update_check_at(now),
             quick_open: false,
             quick_open_query: String::new(),
             quick_open_selected: 0,

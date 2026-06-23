@@ -19,6 +19,7 @@ const REPAINT_LABEL_TERMINAL_OUTPUT: &str = "terminal";
 const REPAINT_LABEL_FILESYSTEM_CHANGES: &str = "fs";
 const REPAINT_LABEL_COMMANDS: &str = "commands";
 const REPAINT_LABEL_LANGUAGE_SYNC: &str = "sync";
+const REPAINT_LABEL_UPDATE_CHECK: &str = "update";
 const REPAINT_LABEL_LSP_RESTART: &str = "restart";
 const REPAINT_LABEL_LSP_DIAGNOSTICS: &str = "lspdiag";
 const REPAINT_LABEL_WORKSPACE_REFRESH: &str = "refresh";
@@ -36,6 +37,7 @@ pub(crate) enum RepaintCause {
     FilesystemChanges,
     Commands,
     LanguageSync,
+    UpdateCheck,
     LspRestart,
     LspDiagnostics,
     WorkspaceRefresh,
@@ -54,6 +56,7 @@ pub(crate) struct RepaintFrameActivity {
     pub(crate) filesystem_changes: usize,
     pub(crate) commands: usize,
     pub(crate) language_syncs: usize,
+    pub(crate) update_checks: usize,
     pub(crate) lsp_restarts: usize,
     pub(crate) lsp_diagnostics: usize,
     pub(crate) workspace_refreshes: usize,
@@ -71,6 +74,7 @@ impl RepaintFrameActivity {
             || self.filesystem_changes > 0
             || self.commands > 0
             || self.language_syncs > 0
+            || self.update_checks > 0
             || self.lsp_restarts > 0
             || self.lsp_diagnostics > 0
             || self.workspace_refreshes > 0
@@ -149,6 +153,8 @@ pub(crate) fn repaint_cause(activity: RepaintFrameActivity) -> RepaintCause {
         RepaintCause::Commands
     } else if activity.language_syncs > 0 {
         RepaintCause::LanguageSync
+    } else if activity.update_checks > 0 {
+        RepaintCause::UpdateCheck
     } else if activity.lsp_restarts > 0 {
         RepaintCause::LspRestart
     } else if activity.lsp_diagnostics > 0 {
@@ -339,6 +345,12 @@ fn append_activity_label(output: &mut String, activity: RepaintFrameActivity) {
     push_count(
         output,
         &mut has_part,
+        activity.update_checks,
+        REPAINT_LABEL_UPDATE_CHECK,
+    );
+    push_count(
+        output,
+        &mut has_part,
         activity.lsp_restarts,
         REPAINT_LABEL_LSP_RESTART,
     );
@@ -411,6 +423,7 @@ impl RepaintCause {
             Self::FilesystemChanges => REPAINT_LABEL_FILESYSTEM_CHANGES,
             Self::Commands => REPAINT_LABEL_COMMANDS,
             Self::LanguageSync => REPAINT_LABEL_LANGUAGE_SYNC,
+            Self::UpdateCheck => REPAINT_LABEL_UPDATE_CHECK,
             Self::LspRestart => REPAINT_LABEL_LSP_RESTART,
             Self::LspDiagnostics => REPAINT_LABEL_LSP_DIAGNOSTICS,
             Self::WorkspaceRefresh => REPAINT_LABEL_WORKSPACE_REFRESH,
@@ -464,6 +477,14 @@ mod tests {
                 ..RepaintFrameActivity::default()
             }),
             RepaintCause::LspDiagnostics
+        );
+        assert_eq!(
+            repaint_cause(RepaintFrameActivity {
+                update_checks: 1,
+                lsp_restarts: 1,
+                ..RepaintFrameActivity::default()
+            }),
+            RepaintCause::UpdateCheck
         );
         assert_eq!(
             repaint_cause(RepaintFrameActivity {
@@ -772,6 +793,17 @@ mod tests {
                 ..RepaintFrameActivity::default()
             }),
             "startup"
+        );
+    }
+
+    #[test]
+    fn repaint_activity_label_reports_update_checks() {
+        assert_eq!(
+            activity_label(RepaintFrameActivity {
+                update_checks: 2,
+                ..RepaintFrameActivity::default()
+            }),
+            "2 update"
         );
     }
 
