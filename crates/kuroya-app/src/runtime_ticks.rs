@@ -64,7 +64,8 @@ impl KuroyaApp {
     pub(crate) fn spawn_session_save(&mut self, root: PathBuf, session: SessionSaveSnapshot) {
         let tx = self.tx.clone();
         self.record_async_task_started("Session Save", compact_path(&root));
-        self.runtime.spawn(async move {
+        self.session_save_in_flight_snapshot = Some(session.clone());
+        self.session_save_in_flight_task = Some(self.runtime.spawn(async move {
             let session = session.into_persisted_session();
             match persistence::save_session_async(root.clone(), session).await {
                 Ok(()) => {
@@ -81,7 +82,7 @@ impl KuroyaApp {
                     );
                 }
             }
-        });
+        }));
     }
 
     pub(crate) fn flush_pending_language_sync(&mut self) -> usize {

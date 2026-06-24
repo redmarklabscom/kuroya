@@ -17,7 +17,7 @@ use crate::{
     },
     source_control_panel::SOURCE_CONTROL_COMMIT_HISTORY_LIMIT,
 };
-use kuroya_core::{BufferHistorySnapshot, Command, EditorVimSettings};
+use kuroya_core::{BufferHistorySnapshot, Command, EditorVimSettings, ThemeSettings};
 use serde::{
     Deserialize, Deserializer, Serialize,
     de::{IgnoredAny, SeqAccess, Visitor},
@@ -26,6 +26,8 @@ use std::{fmt, marker::PhantomData, path::PathBuf};
 
 pub(crate) const APP_STATE_RECENT_PROJECTS_MAX: usize = 12;
 pub(crate) const APP_STATE_TRUSTED_WORKSPACES_MAX: usize = 128;
+pub(crate) const APP_STATE_CUSTOM_THEME_PATHS_MAX: usize = 256;
+pub(crate) const APP_STATE_SETTING_TEXT_MAX_CHARS: usize = 4096;
 pub(crate) const PERSISTED_SESSION_VOLATILE_TEXT_MAX_CHARS: usize = 4 * 1024;
 pub(crate) const PERSISTED_SESSION_RECOVERY_TEXT_MAX_CHARS: usize = 2 * 1024 * 1024;
 pub(crate) const PERSISTED_SESSION_TERMINAL_SCROLLBACK_MAX_CHARS: usize = 256 * 1024;
@@ -51,6 +53,25 @@ pub struct AppState {
     pub vim_keybindings: Option<bool>,
     #[serde(default)]
     pub vim: Option<EditorVimSettings>,
+    #[serde(default)]
+    pub theme: Option<ThemeSettings>,
+    #[serde(default, deserialize_with = "deserialize_app_state_custom_theme_paths")]
+    pub custom_theme_paths: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_app_state_optional_setting_text"
+    )]
+    pub active_custom_theme_path: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_app_state_optional_setting_text"
+    )]
+    pub editor_font_path: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_app_state_optional_setting_text"
+    )]
+    pub ui_font_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -483,6 +504,11 @@ bounded_mapped_vec_deserializer!(
     PathBuf,
     APP_STATE_TRUSTED_WORKSPACES_MAX
 );
+bounded_string_vec_deserializer!(
+    deserialize_app_state_custom_theme_paths,
+    APP_STATE_CUSTOM_THEME_PATHS_MAX,
+    APP_STATE_SETTING_TEXT_MAX_CHARS
+);
 bounded_mapped_vec_deserializer!(
     deserialize_session_paths,
     BoundedPath,
@@ -637,6 +663,15 @@ where
     D: Deserializer<'de>,
 {
     deserialize_bounded_optional_string::<D, PERSISTED_SESSION_DISPLAY_TEXT_MAX_CHARS>(deserializer)
+}
+
+fn deserialize_app_state_optional_setting_text<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_optional_string::<D, APP_STATE_SETTING_TEXT_MAX_CHARS>(deserializer)
 }
 
 fn deserialize_session_path<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>

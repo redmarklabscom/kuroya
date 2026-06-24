@@ -89,6 +89,12 @@ fn app_state_round_trips_recent_projects_atomically() {
     let workspace = temp_workspace("app-state");
     fs::create_dir_all(&workspace).unwrap();
     let path = workspace.join("state.json");
+    let first_theme_path = workspace.join("themes").join("first.toml");
+    let first_theme_path = first_theme_path.display().to_string();
+    let first_editor_font_path = workspace.join("fonts").join("editor.ttf");
+    let first_editor_font_path = first_editor_font_path.display().to_string();
+    let first_ui_font_path = workspace.join("fonts").join("ui.ttf");
+    let first_ui_font_path = first_ui_font_path.display().to_string();
     let first = AppState {
         recent_projects: vec![
             PathBuf::from("workspace-a"),
@@ -116,7 +122,22 @@ fn app_state_round_trips_recent_projects_atomically() {
                 },
             ],
         }),
+        theme: Some(kuroya_core::ThemeSettings {
+            name: "Saved Theme".to_owned(),
+            accent: [1, 2, 3],
+            ..kuroya_core::ThemeSettings::default()
+        }),
+        custom_theme_paths: vec![
+            format!(" {first_theme_path} "),
+            first_theme_path.clone(),
+            "themes/relative.toml".to_owned(),
+            String::new(),
+        ],
+        active_custom_theme_path: Some(format!(" {first_theme_path} ")),
+        editor_font_path: Some(format!(" {first_editor_font_path} ")),
+        ui_font_path: Some(format!(" {first_ui_font_path} ")),
     };
+    let first_normalized_custom_theme_paths = vec![first_theme_path.clone()];
     let first_sanitized_vim = Some(kuroya_core::EditorVimSettings {
         disabled_bindings: vec!["Q".to_owned()],
         key_overrides: vec![kuroya_core::EditorVimKeyOverride {
@@ -133,6 +154,19 @@ fn app_state_round_trips_recent_projects_atomically() {
             disabled_bindings: vec!["<C-n>".to_owned()],
             key_overrides: Vec::new(),
         }),
+        theme: Some(kuroya_core::ThemeSettings {
+            name: "Second Theme".to_owned(),
+            accent: [4, 5, 6],
+            ..kuroya_core::ThemeSettings::default()
+        }),
+        custom_theme_paths: vec!["themes/second.toml".to_owned()],
+        active_custom_theme_path: Some("themes/missing.toml".to_owned()),
+        editor_font_path: Some("fonts/second-editor.ttf".to_owned()),
+        ui_font_path: Some("fonts/second-ui.ttf".to_owned()),
+    };
+    let second_normalized = AppState {
+        active_custom_theme_path: None,
+        ..second.clone()
     };
 
     save_app_state_to_path(&path, &first).unwrap();
@@ -152,9 +186,35 @@ fn app_state_round_trips_recent_projects_atomically() {
         load_app_state_from_path(&path).unwrap().vim,
         first_sanitized_vim
     );
+    assert_eq!(load_app_state_from_path(&path).unwrap().theme, first.theme);
+    let loaded = load_app_state_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.custom_theme_paths,
+        first_normalized_custom_theme_paths
+    );
+    assert_eq!(
+        loaded.active_custom_theme_path.as_deref(),
+        Some(first_theme_path.as_str())
+    );
+    assert_eq!(
+        loaded.editor_font_path.as_deref(),
+        Some(first_editor_font_path.as_str())
+    );
+    assert_eq!(
+        loaded.ui_font_path.as_deref(),
+        Some(first_ui_font_path.as_str())
+    );
 
     save_app_state_to_path(&path, &second).unwrap();
-    assert_eq!(load_app_state_from_path(&path).unwrap(), second);
+    assert_eq!(
+        load_app_state_from_path(&path).unwrap(),
+        AppState {
+            custom_theme_paths: Vec::new(),
+            editor_font_path: None,
+            ui_font_path: None,
+            ..second_normalized
+        }
+    );
     assert_no_app_state_temps(&workspace);
 
     fs::remove_dir_all(workspace).unwrap();

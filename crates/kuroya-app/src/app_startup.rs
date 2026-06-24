@@ -15,6 +15,7 @@ impl KuroyaApp {
             app.record_recent_project(app.workspace.root.clone());
         }
         let _ = app.save_app_state();
+        app.spawn_index();
         app.spawn_git_scan();
         app.spawn_workspace_task_load();
         app.spawn_plugin_discovery();

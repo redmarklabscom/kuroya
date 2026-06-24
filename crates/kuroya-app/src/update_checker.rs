@@ -19,7 +19,6 @@ const DEFAULT_UPDATE_GITHUB_REPOSITORY: &str = "redmarklabscom/kuroya";
 const UPDATE_USER_AGENT: &str = concat!("Kuroya/", env!("CARGO_PKG_VERSION"));
 const UPDATE_DOWNLOAD_DIR: &str = "kuroya-updates";
 pub(crate) const AUTOMATIC_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
-pub(crate) const AUTOMATIC_UPDATE_CHECK_STARTUP_DELAY: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AvailableUpdate {
@@ -750,7 +749,7 @@ fn github_repository_segment_is_valid(segment: &str) -> bool {
 }
 
 pub(crate) fn initial_automatic_update_check_at(now: Instant) -> Instant {
-    checked_instant_add(now, AUTOMATIC_UPDATE_CHECK_STARTUP_DELAY)
+    now
 }
 
 pub(crate) fn next_automatic_update_check_at(now: Instant) -> Instant {
@@ -926,6 +925,20 @@ mod tests {
         assert!(!automatic_update_check_due(now, due, true, false, false));
         assert!(!automatic_update_check_due(now, due, false, true, false));
         assert!(!automatic_update_check_due(now, due, false, false, true));
+    }
+
+    #[test]
+    fn initial_automatic_update_check_is_due_immediately() {
+        let now = Instant::now();
+
+        assert_eq!(initial_automatic_update_check_at(now), now);
+        assert!(automatic_update_check_due(
+            now,
+            initial_automatic_update_check_at(now),
+            false,
+            false,
+            false
+        ));
     }
 
     #[test]

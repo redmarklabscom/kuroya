@@ -16,12 +16,16 @@ pub(super) fn handle_session_save_failed_event(app: &mut KuroyaApp, root: PathBu
 }
 
 fn finish_session_save_and_start_next(app: &mut KuroyaApp, root: PathBuf) {
+    let was_current = app.session_save_in_flight.as_deref() == Some(root.as_path());
     if let Some((next_root, next_session)) = finish_session_save(
         &root,
         &mut app.session_save_in_flight,
         &mut app.queued_session_saves,
     ) {
         app.spawn_session_save(next_root, next_session);
+    } else if was_current {
+        app.session_save_in_flight_snapshot = None;
+        app.session_save_in_flight_task = None;
     }
 }
 

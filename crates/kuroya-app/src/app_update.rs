@@ -6,7 +6,7 @@ use crate::{
 };
 use eframe::egui::Context;
 use kuroya_core::window_zoom_factor;
-use std::time::Instant;
+use std::{mem, time::Instant};
 
 impl KuroyaApp {
     pub(crate) fn drain_terminal_output_for_frame(&mut self) -> (usize, bool) {
@@ -136,11 +136,233 @@ impl KuroyaApp {
         for client in self.lsp_clients.values() {
             client.shutdown();
         }
+        self.abort_session_save_in_flight_for_shutdown();
         let _ = self.save_app_state();
         let _ = self.terminal.drain_output_for_shutdown();
         if !self.workspace_placeholder {
             let _ = persistence::save_session(&self.workspace.root, &self.build_session());
         }
+        self.flush_in_flight_session_save_for_shutdown();
+        self.flush_queued_session_saves_for_shutdown();
         self.terminal.close_all_sessions_for_shutdown();
+    }
+
+    fn abort_session_save_in_flight_for_shutdown(&mut self) {
+        if let Some(task) = self.session_save_in_flight_task.take() {
+            task.abort();
+            let _ = self.runtime.block_on(task);
+        }
+    }
+
+    fn flush_in_flight_session_save_for_shutdown(&mut self) {
+        let Some(root) = self.session_save_in_flight.take() else {
+            self.session_save_in_flight_snapshot = None;
+            return;
+        };
+        let Some(session) = self.session_save_in_flight_snapshot.take() else {
+            return;
+        };
+        if !self.workspace_placeholder
+            && crate::workspace_state::paths_match_lexically(&root, &self.workspace.root)
+        {
+            return;
+        }
+        let _ = persistence::save_session(&root, &session.into_persisted_session());
+    }
+
+    fn flush_queued_session_saves_for_shutdown(&mut self) {
+        let current_root = self.workspace.root.clone();
+        for (root, session) in mem::take(&mut self.queued_session_saves) {
+            if !self.workspace_placeholder
+                && crate::workspace_state::paths_match_lexically(&root, &current_root)
+            {
+                continue;
+            }
+            let _ = persistence::save_session(&root, &session.into_persisted_session());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        app_startup_context::AppStartupContext, persistence::PersistedSession,
+        terminal::TerminalPane,
+    };
+    use kuroya_core::{EditorSettings, Workspace};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    };
+    use tokio::runtime::Runtime;
+
+    #[test]
+    fn shutdown_flushes_queued_session_saves_for_other_workspaces() {
+        let old_root = temp_root("shutdown-queued-old");
+        let current_root = temp_root("shutdown-queued-current");
+        fs::create_dir_all(&old_root).unwrap();
+        fs::create_dir_all(&current_root).unwrap();
+        let mut app = app_for_test(old_root.clone());
+        app.source_control_commit_message = "queued old workspace".to_owned();
+        let queued_old = app.build_session_save_snapshot();
+        app.workspace = Workspace::new(current_root.clone());
+        app.source_control_commit_message = "current workspace".to_owned();
+        app.queued_session_saves
+            .insert(old_root.clone(), queued_old);
+
+        app.prepare_shutdown();
+
+        let old_session = PersistedSession::load(&old_root).unwrap().unwrap();
+        let current_session = PersistedSession::load(&current_root).unwrap().unwrap();
+        assert_eq!(
+            old_session.source_control_commit_message,
+            "queued old workspace"
+        );
+        assert_eq!(
+            current_session.source_control_commit_message,
+            "current workspace"
+        );
+        assert!(app.queued_session_saves.is_empty());
+
+        fs::remove_dir_all(old_root).unwrap();
+        fs::remove_dir_all(current_root).unwrap();
+    }
+
+    #[test]
+    fn shutdown_skips_queued_session_for_current_workspace() {
+        let root = temp_root("shutdown-queued-current");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        app.source_control_commit_message = "queued stale current".to_owned();
+        let queued_current = app.build_session_save_snapshot();
+        app.source_control_commit_message = "fresh current".to_owned();
+        app.queued_session_saves
+            .insert(root.clone(), queued_current);
+
+        app.prepare_shutdown();
+
+        let session = PersistedSession::load(&root).unwrap().unwrap();
+        assert_eq!(session.source_control_commit_message, "fresh current");
+        assert!(app.queued_session_saves.is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shutdown_flushes_in_flight_session_save_for_other_workspace() {
+        let old_root = temp_root("shutdown-in-flight-old");
+        let current_root = temp_root("shutdown-in-flight-current");
+        fs::create_dir_all(&old_root).unwrap();
+        fs::create_dir_all(&current_root).unwrap();
+        let mut app = app_for_test(old_root.clone());
+        app.source_control_commit_message = "in-flight old workspace".to_owned();
+        let in_flight_old = app.build_session_save_snapshot();
+        app.session_save_in_flight = Some(old_root.clone());
+        app.session_save_in_flight_snapshot = Some(in_flight_old);
+        app.workspace = Workspace::new(current_root.clone());
+        app.source_control_commit_message = "current workspace".to_owned();
+
+        app.prepare_shutdown();
+
+        let old_session = PersistedSession::load(&old_root).unwrap().unwrap();
+        let current_session = PersistedSession::load(&current_root).unwrap().unwrap();
+        assert_eq!(
+            old_session.source_control_commit_message,
+            "in-flight old workspace"
+        );
+        assert_eq!(
+            current_session.source_control_commit_message,
+            "current workspace"
+        );
+        assert!(app.session_save_in_flight.is_none());
+        assert!(app.session_save_in_flight_snapshot.is_none());
+
+        fs::remove_dir_all(old_root).unwrap();
+        fs::remove_dir_all(current_root).unwrap();
+    }
+
+    #[test]
+    fn shutdown_skips_in_flight_session_save_for_current_workspace() {
+        let root = temp_root("shutdown-in-flight-current");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        app.source_control_commit_message = "in-flight stale current".to_owned();
+        let in_flight_current = app.build_session_save_snapshot();
+        app.session_save_in_flight = Some(root.clone());
+        app.session_save_in_flight_snapshot = Some(in_flight_current);
+        app.source_control_commit_message = "fresh current".to_owned();
+
+        app.prepare_shutdown();
+
+        let session = PersistedSession::load(&root).unwrap().unwrap();
+        assert_eq!(session.source_control_commit_message, "fresh current");
+        assert!(app.session_save_in_flight.is_none());
+        assert!(app.session_save_in_flight_snapshot.is_none());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shutdown_waits_for_aborted_current_session_save_before_final_save() {
+        let root = temp_root("shutdown-abort-current-save-task");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        app.source_control_commit_message = "stale async current".to_owned();
+        let stale_session = app.build_session_save_snapshot().into_persisted_session();
+        app.session_save_in_flight = Some(root.clone());
+        app.session_save_in_flight_snapshot = Some(app.build_session_save_snapshot());
+        let stale_root = root.clone();
+        app.session_save_in_flight_task = Some(app.runtime.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = persistence::save_session_async(stale_root, stale_session).await;
+        }));
+        app.source_control_commit_message = "fresh current".to_owned();
+
+        app.prepare_shutdown();
+        std::thread::sleep(Duration::from_millis(100));
+
+        let session = PersistedSession::load(&root).unwrap().unwrap();
+        assert_eq!(session.source_control_commit_message, "fresh current");
+        assert!(app.session_save_in_flight_task.is_none());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn app_for_test(root: PathBuf) -> KuroyaApp {
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let settings = EditorSettings::default();
+        let mut app = KuroyaApp::from_startup_context(AppStartupContext {
+            runtime: Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: Workspace::new(root.clone()),
+            settings: settings.clone(),
+            settings_panel_draft: settings,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: TerminalPane::new(root.clone(), 100, 12.0, 1.2),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![root.clone()],
+            now: Instant::now(),
+            startup_timings: Vec::new(),
+        });
+        app.app_state_path_override = Some(root.join("app-state.json"));
+        app
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "kuroya-app-update-{name}-{}-{nanos}",
+            std::process::id()
+        ))
     }
 }

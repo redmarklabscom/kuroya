@@ -208,6 +208,11 @@ impl KuroyaApp {
             trusted_workspaces: self.trusted_workspaces.clone(),
             vim_keybindings: Some(self.app_state_vim_keybindings),
             vim: Some(self.app_state_vim.clone()),
+            theme: Some(self.settings.theme.clone()),
+            custom_theme_paths: self.settings.custom_theme_paths.clone(),
+            active_custom_theme_path: self.settings.active_custom_theme_path.clone(),
+            editor_font_path: self.settings.editor_font_path.clone(),
+            ui_font_path: self.settings.ui_font_path.clone(),
         };
         #[cfg(test)]
         if let Some(path) = &self.app_state_path_override {

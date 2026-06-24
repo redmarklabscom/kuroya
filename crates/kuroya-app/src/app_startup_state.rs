@@ -482,6 +482,8 @@ impl KuroyaApp {
             editor_vim_last_change: None,
             pending_language_sync: HashMap::new(),
             session_save_in_flight: None,
+            session_save_in_flight_snapshot: None,
+            session_save_in_flight_task: None,
             queued_session_saves: HashMap::new(),
             last_autosave: now,
             last_autosave_window_focused: true,
