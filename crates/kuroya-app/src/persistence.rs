@@ -5,7 +5,8 @@ use crate::persistence_storage::{app_state_dir, atomic_write, read_file_bytes_wi
 use crate::workspace_trust::trusted_workspace_paths_match;
 
 pub(crate) use crate::persistence_models::{
-    APP_STATE_RECENT_PROJECTS_MAX, APP_STATE_TRUSTED_WORKSPACES_MAX,
+    APP_STATE_CUSTOM_THEME_PATHS_MAX, APP_STATE_RECENT_PROJECTS_MAX,
+    APP_STATE_SETTING_TEXT_MAX_CHARS, APP_STATE_TRUSTED_WORKSPACES_MAX,
 };
 pub(crate) use crate::persistence_workspace_snapshots::{
     load_latest_workspace_snapshot, save_workspace_snapshot,
@@ -144,6 +145,13 @@ fn load_app_state_from_path(path: &Path) -> anyhow::Result<AppState> {
     };
     state.recent_projects = normalize_recent_projects(state.recent_projects);
     state.trusted_workspaces = normalize_trusted_workspaces(state.trusted_workspaces);
+    state.custom_theme_paths = normalize_app_state_absolute_string_list(state.custom_theme_paths);
+    state.active_custom_theme_path = normalize_app_state_active_custom_theme_path(
+        state.active_custom_theme_path,
+        &state.custom_theme_paths,
+    );
+    state.editor_font_path = normalize_app_state_absolute_optional_string(state.editor_font_path);
+    state.ui_font_path = normalize_app_state_absolute_optional_string(state.ui_font_path);
     if let Some(vim) = &mut state.vim {
         vim.sanitize();
         crate::editor_vim_key_events::sanitize_vim_settings_for_runtime(vim);
@@ -155,6 +163,8 @@ fn save_app_state_to_path(path: &Path, state: &AppState) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let custom_theme_paths =
+        normalize_app_state_absolute_string_list(state.custom_theme_paths.clone());
     let state = AppState {
         recent_projects: normalize_recent_projects(state.recent_projects.clone()),
         trusted_workspaces: normalize_trusted_workspaces(state.trusted_workspaces.clone()),
@@ -164,10 +174,91 @@ fn save_app_state_to_path(path: &Path, state: &AppState) -> anyhow::Result<()> {
             crate::editor_vim_key_events::sanitize_vim_settings_for_runtime(&mut vim);
             vim
         }),
+        theme: state.theme.clone(),
+        custom_theme_paths: custom_theme_paths.clone(),
+        active_custom_theme_path: normalize_app_state_active_custom_theme_path(
+            state.active_custom_theme_path.clone(),
+            &custom_theme_paths,
+        ),
+        editor_font_path: normalize_app_state_absolute_optional_string(
+            state.editor_font_path.clone(),
+        ),
+        ui_font_path: normalize_app_state_absolute_optional_string(state.ui_font_path.clone()),
     };
     let bytes = serde_json::to_vec_pretty(&state)?;
     atomic_write(path, &bytes)?;
     Ok(())
+}
+
+fn normalize_app_state_absolute_string_list(
+    values: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let Some(value) = normalize_app_state_absolute_string(value) else {
+            continue;
+        };
+        if normalized
+            .iter()
+            .any(|candidate: &String| candidate == &value)
+        {
+            continue;
+        }
+        normalized.push(value);
+        if normalized.len() == APP_STATE_CUSTOM_THEME_PATHS_MAX {
+            break;
+        }
+    }
+    normalized
+}
+
+fn normalize_app_state_active_custom_theme_path(
+    value: Option<String>,
+    custom_theme_paths: &[String],
+) -> Option<String> {
+    let value = normalize_app_state_absolute_optional_string(value)?;
+    custom_theme_paths
+        .iter()
+        .any(|path| path == &value)
+        .then_some(value)
+}
+
+fn normalize_app_state_absolute_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(normalize_app_state_absolute_string)
+}
+
+fn normalize_app_state_absolute_string(value: String) -> Option<String> {
+    let value = normalize_app_state_string(value)?;
+    Path::new(&value).is_absolute().then_some(value)
+}
+
+fn normalize_app_state_string(mut value: String) -> Option<String> {
+    trim_string_in_place(&mut value);
+    if value.is_empty() {
+        return None;
+    }
+    truncate_string_chars(&mut value, APP_STATE_SETTING_TEXT_MAX_CHARS);
+    (!value.is_empty()).then_some(value)
+}
+
+fn trim_string_in_place(value: &mut String) {
+    let trimmed_start = value.trim_start().len();
+    if trimmed_start != value.len() {
+        let start = value.len() - trimmed_start;
+        value.drain(..start);
+    }
+    value.truncate(value.trim_end().len());
+}
+
+fn truncate_string_chars(value: &mut String, max_chars: usize) {
+    if max_chars == 0 {
+        value.clear();
+        return;
+    }
+    let Some((index, _)) = value.char_indices().nth(max_chars) else {
+        return;
+    };
+    value.truncate(index);
 }
 
 fn quarantine_corrupt_app_state(path: &Path) -> anyhow::Result<PathBuf> {

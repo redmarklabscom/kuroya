@@ -136,7 +136,9 @@ impl KuroyaApp {
                     restricted_workspace_settings_status()
                 };
                 if workspace_trusted {
-                    self.sync_app_state_vim_settings_after_trusted_reload();
+                    self.sync_app_state_restricted_settings_after_trusted_reload(
+                        &previous_settings,
+                    );
                 }
                 self.theme_dirty = true;
                 self.fonts_dirty = true;
@@ -226,19 +228,37 @@ impl KuroyaApp {
         self.status = settings_opening_status(&path);
     }
 
-    fn sync_app_state_vim_settings_after_trusted_reload(&mut self) {
-        if self.app_state_vim_keybindings == self.settings.vim_keybindings
-            && self.app_state_vim == self.settings.vim
-        {
+    fn sync_app_state_restricted_settings_after_trusted_reload(
+        &mut self,
+        previous_settings: &EditorSettings,
+    ) {
+        let vim_changed = self.app_state_vim_keybindings != self.settings.vim_keybindings
+            || self.app_state_vim != self.settings.vim;
+        let appearance_changed =
+            app_state_appearance_settings_changed(previous_settings, &self.settings);
+        if !vim_changed && !appearance_changed {
             return;
         }
 
-        self.app_state_vim_keybindings = self.settings.vim_keybindings;
-        self.app_state_vim = self.settings.vim.clone();
+        if vim_changed {
+            self.app_state_vim_keybindings = self.settings.vim_keybindings;
+            self.app_state_vim = self.settings.vim.clone();
+        }
         if let Err(error) = self.save_app_state() {
             push_app_state_reload_save_failed_status(&mut self.status, error);
         }
     }
+}
+
+fn app_state_appearance_settings_changed(
+    previous: &EditorSettings,
+    current: &EditorSettings,
+) -> bool {
+    previous.theme != current.theme
+        || previous.custom_theme_paths != current.custom_theme_paths
+        || previous.active_custom_theme_path != current.active_custom_theme_path
+        || previous.editor_font_path != current.editor_font_path
+        || previous.ui_font_path != current.ui_font_path
 }
 
 fn preserve_current_restricted_settings(settings: &mut EditorSettings, current: &EditorSettings) {
@@ -734,10 +754,24 @@ mod tests {
             warning: [210, 153, 34],
             error: [248, 81, 73],
         };
-        let custom_theme_paths = vec![".kuroya/themes/saved.toml".to_owned()];
-        let active_custom_theme_path = Some(".kuroya/themes/saved.toml".to_owned());
-        let editor_font_path = Some("fonts/saved-editor.ttf".to_owned());
-        let ui_font_path = Some("fonts/saved-ui.ttf".to_owned());
+        let custom_theme_path = root.join("themes").join("saved.toml").display().to_string();
+        let custom_theme_paths = vec![
+            custom_theme_path.clone(),
+            ".kuroya/themes/relative.toml".to_owned(),
+        ];
+        let active_custom_theme_path = Some(custom_theme_path.clone());
+        let editor_font_path = Some(
+            root.join("fonts")
+                .join("saved-editor.ttf")
+                .display()
+                .to_string(),
+        );
+        let ui_font_path = Some(
+            root.join("fonts")
+                .join("saved-ui.ttf")
+                .display()
+                .to_string(),
+        );
         let saved_settings = EditorSettings {
             theme: saved_theme.clone(),
             custom_theme_paths: custom_theme_paths.clone(),
@@ -761,6 +795,14 @@ mod tests {
         assert_eq!(app.settings.editor_font_path, editor_font_path);
         assert_eq!(app.settings.ui_font_path, ui_font_path);
         assert_eq!(app.settings_panel_draft.theme, app.settings.theme);
+        let app_state: crate::persistence::AppState =
+            serde_json::from_str(&fs::read_to_string(root.join("app-state.json")).unwrap())
+                .unwrap();
+        assert_eq!(app_state.theme, Some(saved_theme));
+        assert_eq!(app_state.custom_theme_paths, vec![custom_theme_path]);
+        assert_eq!(app_state.active_custom_theme_path, active_custom_theme_path);
+        assert_eq!(app_state.editor_font_path, editor_font_path);
+        assert_eq!(app_state.ui_font_path, ui_font_path);
         fs::remove_dir_all(root).unwrap();
     }
 

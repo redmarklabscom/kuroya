@@ -529,6 +529,8 @@ pub(crate) struct KuroyaApp {
     pub(crate) editor_vim_last_change: Option<EditorVimLastChange>,
     pub(crate) pending_language_sync: HashMap<BufferId, Instant>,
     pub(crate) session_save_in_flight: Option<PathBuf>,
+    pub(crate) session_save_in_flight_snapshot: Option<SessionSaveSnapshot>,
+    pub(crate) session_save_in_flight_task: Option<tokio::task::JoinHandle<()>>,
     pub(crate) queued_session_saves: HashMap<PathBuf, SessionSaveSnapshot>,
     pub(crate) last_autosave: Instant,
     pub(crate) last_autosave_window_focused: bool,

@@ -67,6 +67,13 @@ impl KuroyaApp {
             self.settings.editor_font_path.clone(),
             self.settings.ui_font_path.clone(),
         );
+        let previous_app_state_appearance = (
+            self.settings.theme.clone(),
+            self.settings.custom_theme_paths.clone(),
+            self.settings.active_custom_theme_path.clone(),
+            self.settings.editor_font_path.clone(),
+            self.settings.ui_font_path.clone(),
+        );
         let previous_theme = (
             self.settings.theme.clone(),
             self.settings.active_custom_theme_path.clone(),
@@ -203,9 +210,17 @@ impl KuroyaApp {
             self.spawn_git_scan();
         }
 
-        let app_state_save_error = if previous_vim_settings
-            != (self.settings.vim_keybindings, self.settings.vim.clone())
-        {
+        let app_state_vim_changed =
+            previous_vim_settings != (self.settings.vim_keybindings, self.settings.vim.clone());
+        let app_state_appearance_changed = previous_app_state_appearance
+            != (
+                self.settings.theme.clone(),
+                self.settings.custom_theme_paths.clone(),
+                self.settings.active_custom_theme_path.clone(),
+                self.settings.editor_font_path.clone(),
+                self.settings.ui_font_path.clone(),
+            );
+        let app_state_save_error = if app_state_vim_changed || app_state_appearance_changed {
             self.app_state_vim_keybindings = self.settings.vim_keybindings;
             self.app_state_vim = self.settings.vim.clone();
             self.save_app_state().err()
@@ -318,7 +333,7 @@ mod tests {
         lsp_runtime::due_lsp_symbol_refresh_ids, path_display::DISPLAY_ERROR_LABEL_MAX_CHARS,
         terminal::TerminalPane, workspace_state::settings_path,
     };
-    use kuroya_core::{EditorSettings, TextBuffer, Workspace};
+    use kuroya_core::{EditorSettings, TextBuffer, ThemeSettings, Workspace};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -487,6 +502,50 @@ mod tests {
             Some(app.settings.vim_keybindings)
         );
         assert_eq!(app_state.vim, Some(app.settings.vim.clone()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_persists_appearance_settings_to_app_state() {
+        let root = temp_root("appearance-app-state-persist");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        let app_state_path = root.join("app-state.json");
+        let theme_path = root.join("themes").join("panel.toml");
+        let editor_font_path = root.join("fonts").join("editor.ttf");
+        let ui_font_path = root.join("fonts").join("ui.ttf");
+        let theme_path = theme_path.display().to_string();
+        let editor_font_path = editor_font_path.display().to_string();
+        let ui_font_path = ui_font_path.display().to_string();
+        app.app_state_path_override = Some(app_state_path.clone());
+        app.settings_panel_draft.theme = ThemeSettings {
+            name: "Panel Theme".to_owned(),
+            accent: [10, 20, 30],
+            ..ThemeSettings::default()
+        };
+        app.settings_panel_draft.custom_theme_paths =
+            vec![theme_path.clone(), "themes/relative.toml".to_owned()];
+        app.settings_panel_draft.active_custom_theme_path = Some(theme_path.clone());
+        app.settings_editor_font_path = editor_font_path.clone();
+        app.settings_ui_font_path = ui_font_path.clone();
+
+        app.apply_settings_panel();
+
+        let app_state: crate::persistence::AppState =
+            serde_json::from_str(&fs::read_to_string(app_state_path).unwrap()).unwrap();
+        assert_eq!(app_state.theme, Some(app.settings.theme.clone()));
+        assert_eq!(app_state.custom_theme_paths, vec![theme_path.clone()]);
+        assert_eq!(
+            app_state.active_custom_theme_path.as_deref(),
+            Some(theme_path.as_str())
+        );
+        assert_eq!(
+            app_state.editor_font_path.as_deref(),
+            Some(editor_font_path.as_str())
+        );
+        assert_eq!(
+            app_state.ui_font_path.as_deref(),
+            Some(ui_font_path.as_str())
+        );
         let _ = fs::remove_dir_all(root);
     }
 
