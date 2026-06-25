@@ -1,14 +1,6 @@
-use crate::{
-    path_display::display_error_label_cow, settings_form::optional_setting_path_from_input,
-};
+use crate::{native_paths::normalize_native_path, settings_form::optional_setting_path_from_input};
 
-use std::{
-    path::{Path, PathBuf},
-    process::Command as ProcessCommand,
-};
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
 
 mod paths;
 
@@ -34,66 +26,19 @@ fn validated_selected_font_setting_path(
         .ok_or_else(|| "Selected font path contains unsupported characters".to_owned())
 }
 
-#[cfg(windows)]
 fn pick_font_file(initial_dir: &Path) -> Result<Option<PathBuf>, String> {
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    const SCRIPT: &str = r#"
-param([string]$InitialDirectory)
-Add-Type -AssemblyName System.Windows.Forms
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = 'Choose font file'
-$dialog.Filter = 'Font files (*.ttf;*.otf)|*.ttf;*.otf|All files (*.*)|*.*'
-$dialog.CheckFileExists = $true
-$dialog.Multiselect = $false
-if ($InitialDirectory -and [System.IO.Directory]::Exists($InitialDirectory)) {
-    $dialog.InitialDirectory = $InitialDirectory
-}
-$result = $dialog.ShowDialog()
-if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-    Write-Output $dialog.FileName
-}
-"#;
-    let initial_dir = initial_dir.display().to_string();
-
-    let output = ProcessCommand::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-STA",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            SCRIPT,
-            &initial_dir,
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|error| font_chooser_failure_status(&error.to_string()))?;
-
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(if error.is_empty() {
-            "Could not open font chooser".to_owned()
-        } else {
-            font_chooser_failure_status(&error)
-        });
-    }
-
-    let selected = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if selected.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(PathBuf::from(selected)))
-    }
+    Ok(rfd::FileDialog::new()
+        .set_title("Choose font file")
+        .add_filter("Font files", &["ttf", "otf"])
+        .add_filter("All files", &["*"])
+        .set_directory(initial_dir)
+        .pick_file()
+        .map(normalize_native_path))
 }
 
-#[cfg(not(windows))]
-fn pick_font_file(_initial_dir: &Path) -> Result<Option<PathBuf>, String> {
-    Err("Font chooser is only available on Windows in this build".to_owned())
-}
-
+#[cfg(test)]
 fn font_chooser_failure_status(error: &str) -> String {
-    let error = display_error_label_cow(error);
+    let error = crate::path_display::display_error_label_cow(error);
     format!("Could not open font chooser: {}", error.as_ref())
 }
 
